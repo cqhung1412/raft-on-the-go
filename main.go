@@ -30,7 +30,7 @@ func main() {
 		}(node)
 	}
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 	fmt.Println("All nodes started.")
 
 	// Trigger election after all nodes are started
