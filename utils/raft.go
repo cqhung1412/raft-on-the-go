@@ -1,10 +1,14 @@
 package utils
 
 import (
+	"context"
 	"log"
 	"math/rand"
+	raftpb "raft-on-the-go/proto"
 	"sync"
 	"time"
+
+	"google.golang.org/grpc"
 )
 
 type RaftNode struct {
@@ -59,13 +63,14 @@ func NewRaftNode(id string, peers []string) *RaftNode {
 
 func (rn *RaftNode) StartElectionTimer() {
 	for {
-		timeout := time.Duration(rand.Intn(2000)+2000) * time.Millisecond
-		electionReset := time.After(timeout)
+		// Randomize election timeout between 1500ms - 3000ms
+		timeout := time.Duration(1500+rand.Intn(1500)) * time.Millisecond
+		timer := time.NewTimer(timeout)
 
 		select {
-		case <-electionReset:
+		case <-timer.C:
 			rn.mu.Lock()
-			if rn.state == "follower" || rn.state == "candidate" {
+			if rn.state != "leader" {
 				log.Printf("%s starting election for term %d", rn.id, rn.currentTerm+1)
 				rn.startElection()
 			}
@@ -99,15 +104,48 @@ func (rn *RaftNode) startElection() {
 
 	for _, peer := range rn.peers {
 		go func(peer string) {
-			// Send RequestVote RPCs
-			log.Printf("[Unimplemented] %s is requesting vote from %s", rn.id, peer)
-		}(peer)
-	}
+			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
+			if err != nil {
+				log.Printf("%s failed to connect to %s: %v", rn.id, peer, err)
+				return
+			}
+			defer conn.Close()
 
-	time.Sleep(2 * time.Second)
-	if rn.votesReceived > len(rn.peers)/2 {
-		rn.state = "leader"
-		log.Printf("%s became leader for term %d", rn.id, rn.currentTerm)
+			client := raftpb.NewRaftClient(conn)
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
+			req := &raftpb.VoteRequest{
+				Term:         int32(rn.currentTerm),
+				CandidateId:  rn.id,
+				LastLogIndex: int32(len(rn.log) - 1),
+				LastLogTerm:  0, // Assuming simplified log, update if using full logs
+			}
+
+			res, err := client.RequestVote(ctx, req)
+			if err != nil {
+				log.Printf("%s failed to request vote from %s: %v", rn.id, peer, err)
+				return
+			}
+
+			rn.mu.Lock()
+			defer rn.mu.Unlock()
+
+			if res.VoteGranted {
+				rn.votesReceived++
+				log.Printf("%s received vote from %s", rn.id, peer)
+			} else if int(res.Term) > rn.currentTerm {
+				rn.currentTerm = int(res.Term)
+				rn.state = "follower"
+				rn.votedFor = ""
+			}
+
+			if rn.votesReceived > len(rn.peers)/2 && rn.state == "candidate" {
+				rn.state = "leader"
+				log.Printf("%s became leader for term %d", rn.id, rn.currentTerm)
+			}
+		}(peer)
 	}
 }
 

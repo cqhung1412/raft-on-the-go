@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
 	pb "raft-on-the-go/proto"
+
 	"raft-on-the-go/utils"
 
 	"google.golang.org/grpc"
@@ -17,6 +19,32 @@ type Node struct {
 	port     string
 	peers    []string
 	RaftNode *utils.RaftNode
+}
+
+func (n *Node) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
+	response := n.RaftNode.HandleRequestVote(&utils.VoteRequest{
+		Term:         int(req.Term),
+		CandidateId:  req.CandidateId,
+		LastLogIndex: int(req.LastLogIndex),
+		LastLogTerm:  int(req.LastLogTerm),
+	})
+	return &pb.VoteResponse{
+		Term:        int32(response.Term),
+		VoteGranted: response.VoteGranted,
+	}, nil
+}
+
+func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.AppendResponse, error) {
+	response := n.RaftNode.HandleAppendEntries(&utils.AppendRequest{
+		Term:         int(req.Term),
+		LeaderId:     req.LeaderId,
+		Entries:      req.Entries,
+		LeaderCommit: int(req.LeaderCommit),
+	})
+	return &pb.AppendResponse{
+		Term:    int32(response.Term),
+		Success: response.Success,
+	}, nil
 }
 
 func NewNode(id, port string, peers []string) *Node {
