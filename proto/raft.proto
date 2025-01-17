@@ -7,6 +7,7 @@ option go_package = "./proto;raftpb";
 service Raft {
   rpc RequestVote (VoteRequest) returns (VoteResponse);
   rpc AppendEntries (AppendRequest) returns (AppendResponse);
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 message VoteRequest {
@@ -31,4 +32,13 @@ message AppendRequest {
 message AppendResponse {
   int32 term = 1;
   bool success = 2;
+}
+
+message HeartbeatRequest {
+  int32 term = 1;
+  string leaderId = 2;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
 }

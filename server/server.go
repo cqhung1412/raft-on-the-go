@@ -47,6 +47,13 @@ func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 	}, nil
 }
 
+// Heartbeat RPC Implementation
+func (n *Node) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	log.Printf("Node %s received heartbeat from Leader %s for term %d", n.id, req.LeaderId, req.Term)
+
+	return n.RaftNode.ReceiveHeartbeat(req)
+}
+
 func NewNode(id, port string, peers []string) *Node {
 	return &Node{
 		id:       id,
