@@ -13,7 +13,7 @@ import (
 )
 
 type Node struct {
-	pb.UnimplementedRaftServer
+	pb.RaftServer
 
 	id       string
 	port     string
@@ -22,6 +22,7 @@ type Node struct {
 }
 
 func (n *Node) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
+	log.Printf("RequestVote from %s for term %d", req.CandidateId, req.Term)
 	response := n.RaftNode.HandleRequestVote(&utils.VoteRequest{
 		Term:         int(req.Term),
 		CandidateId:  req.CandidateId,
