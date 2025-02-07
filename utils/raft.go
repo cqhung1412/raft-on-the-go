@@ -12,10 +12,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-// Cached connections to peers
-var connCache = make(map[string]*grpc.ClientConn)
-var connMutex sync.Mutex
-
 const (
 	HeartbeatInterval  = 500 * time.Millisecond
 	MinElectionTimeout = 1500 * time.Millisecond
@@ -139,8 +135,6 @@ func (rn *RaftNode) startElection() {
 			}
 		}(peer)
 	}
-
-	rn.resetElectionTimer()
 }
 
 func (rn *RaftNode) sendHeartbeats() {
@@ -168,92 +162,6 @@ func (rn *RaftNode) sendHeartbeats() {
 	}
 
 	rn.resetHeartbeatTimer()
-}
-
-func (rn *RaftNode) StartElectionTimer() {
-	for {
-		// Randomize election timeout between 1500ms - 3000ms
-		timeout := time.Duration(1500+rand.Intn(1500)) * time.Millisecond
-		timer := time.NewTimer(timeout)
-
-		select {
-		case <-timer.C:
-			rn.mu.Lock()
-			if rn.state != State(Leader) {
-				log.Printf("%s starting election for term %d", rn.id, rn.currentTerm+1)
-				rn.startElection()
-			}
-			rn.mu.Unlock()
-		}
-	}
-}
-
-func (rn *RaftNode) startHeartbeat() {
-	ticker := time.NewTicker(500 * time.Millisecond) // Send heartbeat every 500ms
-	defer ticker.Stop()
-
-	for range ticker.C {
-		rn.mu.Lock()
-		if rn.state != State(Leader) {
-			rn.mu.Unlock()
-			return // Stop heartbeats if not leader
-		}
-		rn.mu.Unlock()
-
-		rn.sendHeartbeats()
-		// for _, peer := range rn.peers {
-		// 	go rn.sendHeartbeat(peer)
-		// }
-	}
-}
-
-func (rn *RaftNode) sendHeartbeatToPeer(peer string) {
-	// Get or create a cached connection
-	conn := rn.getOrCreateConnection(peer)
-	if conn == nil {
-		return
-	}
-
-	client := raftpb.NewRaftClient(conn)
-
-	// Set a timeout for the heartbeat RPC
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	_, err := client.Heartbeat(ctx, &raftpb.HeartbeatRequest{
-		Term:     int32(rn.currentTerm),
-		LeaderId: rn.id,
-	})
-	if err != nil {
-		log.Printf("%s failed to send heartbeat to %s: %v", rn.id, peer, err)
-	}
-}
-
-func (rn *RaftNode) getOrCreateConnection(peer string) *grpc.ClientConn {
-	connMutex.Lock()
-	defer connMutex.Unlock()
-
-	// Reuse existing connection if available
-	if conn, ok := connCache[peer]; ok {
-		return conn
-	}
-
-	// Create a new connection with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx, "localhost:"+peer,
-		grpc.WithInsecure(),
-		grpc.WithBlock(),
-		grpc.WithTimeout(2*time.Second),
-	)
-	if err != nil {
-		log.Printf("%s failed to connect to %s: %v", rn.id, peer, err)
-		return nil
-	}
-
-	connCache[peer] = conn
-	return conn
 }
 
 func (rn *RaftNode) ReceiveHeartbeat(req *raftpb.HeartbeatRequest) (*raftpb.HeartbeatResponse, error) {
@@ -287,6 +195,7 @@ func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
 	if (rn.votedFor == "" || rn.votedFor == req.CandidateId) && req.Term >= rn.currentTerm {
 		rn.votedFor = req.CandidateId
 		voteGranted = true
+		rn.resetElectionTimer()
 		log.Printf("%s voted for %s in term %d", rn.id, req.CandidateId, req.Term)
 	}
 
