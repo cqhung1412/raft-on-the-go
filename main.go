@@ -33,10 +33,5 @@ func main() {
 	time.Sleep(1 * time.Second)
 	fmt.Println("All nodes started.")
 
-	// Trigger election after all nodes are started
-	for _, node := range nodes {
-		go node.RaftNode.StartElectionTimer()
-	}
-
 	wg.Wait()
 }
