@@ -103,10 +103,11 @@ func (rn *RaftNode) startElection() {
 
 	rn.state = Candidate
 	rn.currentTerm++
-	rn.votedFor = rn.id
+	rn.votedFor = rn.id // Vote its self
 	votes := 1
 	log.Printf("%s starting election for term %d", rn.id, rn.currentTerm)
 
+	// send RequestVote for other node
 	for _, peer := range rn.peers {
 		go func(peer string) {
 			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
@@ -126,7 +127,8 @@ func (rn *RaftNode) startElection() {
 			if err == nil && resp.VoteGranted {
 				rn.mu.Lock()
 				votes++
-				if votes > len(rn.peers) && rn.state == Candidate {
+
+				if rn.state == Candidate && votes > len(rn.peers)/2 {
 					rn.state = Leader
 					rn.resetHeartbeatTimer()
 					log.Printf("%s became the leader for term %d", rn.id, rn.currentTerm)
