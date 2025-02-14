@@ -36,6 +36,7 @@ type RaftNode struct {
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
 	grpcServer     *grpc.Server
+	KVStore        *KVStore
 	log            []string
 	commitIndex    int
 	votesReceived  int
@@ -73,6 +74,7 @@ func NewRaftNode(id string, peers []string) *RaftNode {
 		votedFor:      "",
 		state:         State(Follower),
 		grpcServer:    grpc.NewServer(),
+		KVStore:       NewKVStore(),
 		log:           []string{},
 		commitIndex:   0,
 		votesReceived: 0,
@@ -209,6 +211,7 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
+	// Nếu term của leader thấp hơn, từ chối yêu cầu
 	if req.Term < rn.currentTerm {
 		return &AppendResponse{
 			Term:    rn.currentTerm,
@@ -216,17 +219,28 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 		}
 	}
 
-	// Reset to follower if leader term is higher or the same
-	rn.state = Follower
-	rn.currentTerm = req.Term
-	rn.resetElectionTimer()
-
-	if len(req.Entries) > 0 {
-		rn.log = append(rn.log, req.Entries...)
-		log.Printf("[%s] Term %d: Received AppendEntries from %s", rn.id, rn.currentTerm, req.LeaderId)
-	} else {
-		log.Printf("[%s] Term %d: Received HeartBeat from leader %s", rn.id, rn.currentTerm, req.LeaderId)
+	// Nếu term của leader cao hơn, cập nhật term và ghi lại log mới
+	if req.Term > rn.currentTerm {
+		rn.currentTerm = req.Term
 	}
+
+	// // Reset to follower if leader term is higher or the same
+	// rn.state = Follower
+	// rn.currentTerm = req.Term
+	// rn.resetElectionTimer()
+
+
+	// if len(req.Entries) > 0 {
+	// 	rn.log = append(rn.log, req.Entries...)
+	// 	log.Printf("[%s] Term %d: Received AppendEntries from %s", rn.id, rn.currentTerm, req.LeaderId)
+	// } else {
+	// 	log.Printf("[%s] Term %d: Received HeartBeat from leader %s", rn.id, rn.currentTerm, req.LeaderId)
+	// }
+
+	// Thêm các entry vào log
+	rn.log = append(rn.log, req.Entries...)
+	rn.KVStore.SyncData(req.Entries) // Đồng bộ dữ liệu vào KVStore
+	log.Printf("Node %s Appending Entry: %v", rn.id, req.Entries)
 
 	return &AppendResponse{
 		Term:    rn.currentTerm,

@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
-	"raft-on-the-go/server"
 	"log"
 	"net"
+	raftpb "raft-on-the-go/proto"
+	"raft-on-the-go/server"
+
+	"google.golang.org/grpc"
 )
 
-func main() {
+func runServer() {
 	ports := []string{"5001", "5002", "5003", "5004", "5005"}
 
 	// Kiểm tra từng cổng trong dải
@@ -46,4 +51,49 @@ func main() {
 
 	// Nếu không tìm thấy cổng trống nào
 	log.Fatal("Không tìm thấy cổng trống trong dải 5001-5005. Đảm bảo rằng các cổng này chưa bị chiếm dụng.")
+}
+
+
+func runClient(leaderPort string, term int32) {
+	// Kết nối tới Leader node qua gRPC
+	conn, err := grpc.Dial("localhost:"+leaderPort, grpc.WithInsecure())
+	if err != nil {
+		log.Fatalf("Không thể kết nối tới Leader: %v", err)
+	}
+	defer conn.Close()
+
+	// Tạo một client gRPC
+	client := raftpb.NewRaftClient(conn)
+
+	// Tạo yêu cầu AppendEntries
+	req := &raftpb.AppendRequest{
+		Term:    term,
+		Entries: []string{"sample log entry"}, // Đảm bảo bạn có dữ liệu entry hợp lệ
+	}
+
+	// Gửi yêu cầu AppendEntries
+	resp, err := client.AppendEntries(context.Background(), req)
+	if err != nil {
+		log.Fatalf("Lỗi khi gửi yêu cầu AppendEntries: %v", err)
+	}
+
+	fmt.Printf("Phản hồi từ Leader: Term=%d, Success=%v\n", resp.Term, resp.Success)
+}
+
+func main() {
+	// Thêm flag cho client
+	clientFlag := flag.Bool("client", false, "Chạy client thay vì server")
+	leaderPort := flag.String("leader", "5001", "Cổng của Leader mà client sẽ gửi yêu cầu đến")
+	term := flag.Int("term", 1, "Term của Leader")
+
+	flag.Parse()
+
+	// Nếu flag --client được sử dụng, chạy client
+	if *clientFlag {
+		runClient(*leaderPort, int32(*term))
+		return
+	}
+
+	// Nếu không có flag --client, chạy server
+	runServer()
 }

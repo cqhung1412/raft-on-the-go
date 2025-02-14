@@ -36,12 +36,16 @@ func (n *Node) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteRe
 }
 
 func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.AppendResponse, error) {
+	// Cập nhật dữ liệu vào KVStore (lưu trữ log entries)
+	n.RaftNode.KVStore.SyncData(req.Entries)
+	
 	response := n.RaftNode.HandleAppendEntries(&utils.AppendRequest{
 		Term:         int(req.Term),
 		LeaderId:     req.LeaderId,
 		Entries:      req.Entries,
 		LeaderCommit: int(req.LeaderCommit),
 	})
+
 	return &pb.AppendResponse{
 		Term:    int32(response.Term),
 		Success: response.Success,
@@ -50,7 +54,7 @@ func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 
 // Heartbeat RPC Implementation
 func (n *Node) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
-	log.Printf("[%s] Term %d: Received heartbeat from Leader %s ", n.id, req.Term, req.LeaderId)
+	log.Printf("[%s] Term %d: Received heartbeat from Leader %s ", n.id, req.Term, req.LeaderId)	
 
 	return n.RaftNode.ReceiveHeartbeat(req)
 }

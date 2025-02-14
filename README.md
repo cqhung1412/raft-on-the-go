@@ -25,3 +25,8 @@ Quick kill network
 chmod +x ./script/kill-raft-network.sh
 ./script/kill-raft-network.sh
 ```
+
+create client
+```cmd
+go run main.go --client --leader=<leader-port|5001> --term=<leader-term|1>
+```
