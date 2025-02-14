@@ -22,7 +22,7 @@ type Node struct {
 }
 
 func (n *Node) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
-	log.Printf("RequestVote from %s for term %d", req.CandidateId, req.Term)
+	log.Printf("[%s] Term %d: Request vote", req.CandidateId, req.Term)
 	response := n.RaftNode.HandleRequestVote(&utils.VoteRequest{
 		Term:         int(req.Term),
 		CandidateId:  req.CandidateId,
@@ -50,7 +50,7 @@ func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 
 // Heartbeat RPC Implementation
 func (n *Node) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
-	log.Printf("Node %s received heartbeat from Leader %s for term %d", n.id, req.LeaderId, req.Term)
+	log.Printf("[%s] Term %d: Received heartbeat from Leader %s ", n.id, req.Term, req.LeaderId)
 
 	return n.RaftNode.ReceiveHeartbeat(req)
 }
@@ -73,7 +73,7 @@ func (n *Node) Start() {
 	grpcServer := grpc.NewServer()
 	pb.RegisterRaftServer(grpcServer, n)
 
-	fmt.Printf("%s running on port %s\n", n.id, n.port)
+	fmt.Printf("[%s] Running on port %s\n", n.id, n.port)
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("%s failed to serve: %v", n.id, err)
 	}

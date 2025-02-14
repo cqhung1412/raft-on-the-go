@@ -2,7 +2,6 @@ package utils
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"math/rand"
 	raftpb "raft-on-the-go/proto"
@@ -105,14 +104,14 @@ func (rn *RaftNode) startElection() {
 	rn.currentTerm++
 	rn.votedFor = rn.id // Vote its self
 	votes := 1
-	log.Printf("%s starting election for term %d", rn.id, rn.currentTerm)
+	log.Printf("[%s] Term %d: Initialized, waiting for election timeout...", rn.id, rn.currentTerm)
 
 	// send RequestVote for other node
 	for _, peer := range rn.peers {
 		go func(peer string) {
 			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
 			if err != nil {
-				log.Printf("%s failed to connect to %s: %v", rn.id, peer, err)
+				log.Printf("[%s] Failed to connect to %s: %v", rn.id, peer, err)
 				return
 			}
 			defer conn.Close()
@@ -123,7 +122,7 @@ func (rn *RaftNode) startElection() {
 
 			req := &raftpb.VoteRequest{CandidateId: rn.id, Term: int32(rn.currentTerm)}
 			resp, err := client.RequestVote(ctx, req)
-			log.Printf("%s received response from %s: %v", rn.id, peer, resp)
+			// log.Printf("[%s] Received response from %s: %v", rn.id, peer, resp)
 			if err == nil && resp.VoteGranted {
 				rn.mu.Lock()
 				votes++
@@ -131,7 +130,7 @@ func (rn *RaftNode) startElection() {
 				if rn.state == Candidate && votes > len(rn.peers)/2 {
 					rn.state = Leader
 					rn.resetHeartbeatTimer()
-					log.Printf("%s became the leader for term %d", rn.id, rn.currentTerm)
+					log.Printf("[%s] Term %d: Received majority votes, becoming Leader", rn.id, rn.currentTerm)
 				}
 				rn.mu.Unlock()
 			}
@@ -148,7 +147,7 @@ func (rn *RaftNode) sendHeartbeats() {
 		go func(peer string) {
 			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
 			if err != nil {
-				log.Printf("%s failed to send heartbeat to %s: %v", rn.id, peer, err)
+				log.Printf("[%s] Term %d: Failed to send heartbeat to %s: %v", rn.id, rn.currentTerm, peer, err)
 			}
 			defer conn.Close()
 
@@ -158,7 +157,7 @@ func (rn *RaftNode) sendHeartbeats() {
 
 			_, err = client.Heartbeat(ctx, &raftpb.HeartbeatRequest{LeaderId: rn.id, Term: int32(rn.currentTerm)})
 			if err != nil {
-				log.Printf("%s tried and failed to send heartbeat to %s: %v", rn.id, peer, err)
+				log.Printf("[%s] Term %d: Tried and failed to send heartbeat to %s: %v", rn.id, rn.currentTerm, peer, err)
 			}
 		}(peer)
 	}
@@ -193,12 +192,11 @@ func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
 	}
 
 	voteGranted := false
-	fmt.Printf("%t %t %t\n", rn.votedFor == "", rn.votedFor == req.CandidateId, req.Term >= rn.currentTerm)
 	if (rn.votedFor == "" || rn.votedFor == req.CandidateId) && req.Term >= rn.currentTerm {
 		rn.votedFor = req.CandidateId
 		voteGranted = true
 		rn.resetElectionTimer()
-		log.Printf("%s voted for %s in term %d", rn.id, req.CandidateId, req.Term)
+		log.Printf("[%s] Term %d: voted for %s", rn.id, req.Term, req.CandidateId)
 	}
 
 	return &VoteResponse{
@@ -225,9 +223,9 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 
 	if len(req.Entries) > 0 {
 		rn.log = append(rn.log, req.Entries...)
-		log.Printf("%s received AppendEntries from %s", rn.id, req.LeaderId)
+		log.Printf("[%s] Term %d: Received AppendEntries from %s", rn.id, rn.currentTerm, req.LeaderId)
 	} else {
-		log.Printf("%s received heartbeat from leader %s", rn.id, req.LeaderId)
+		log.Printf("[%s] Term %d: Received HeartBeat from leader %s", rn.id, rn.currentTerm, req.LeaderId)
 	}
 
 	return &AppendResponse{
