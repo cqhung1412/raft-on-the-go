@@ -4,17 +4,16 @@ import (
 	"context"
 	"log"
 	"math/rand"
-	raftpb "raft-on-the-go/proto"
 	"sync"
 	"time"
-
+	pb "raft-on-the-go/proto"
 	"google.golang.org/grpc"
 )
 
 const (
-	HeartbeatInterval  = 500 * time.Millisecond
-	MinElectionTimeout = 1500 * time.Millisecond
-	MaxElectionTimeout = 3000 * time.Millisecond
+	HeartbeatInterval  = 1000 * time.Millisecond
+	MinElectionTimeout = 3000 * time.Millisecond
+	MaxElectionTimeout = 5000 * time.Millisecond
 )
 
 type State int
@@ -26,13 +25,13 @@ const (
 )
 
 type RaftNode struct {
-	raftpb.UnimplementedRaftServer
+	pb.UnimplementedRaftServer
 	mu             sync.Mutex
 	id             string
 	peers          []string
 	currentTerm    int
 	votedFor       string
-	state          State
+	State          State
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
 	grpcServer     *grpc.Server
@@ -72,7 +71,7 @@ func NewRaftNode(id string, peers []string) *RaftNode {
 		peers:         peers,
 		currentTerm:   0,
 		votedFor:      "",
-		state:         State(Follower),
+		State:         State(Follower),
 		grpcServer:    grpc.NewServer(),
 		KVStore:       NewKVStore(),
 		log:           []string{},
@@ -102,7 +101,7 @@ func (rn *RaftNode) startElection() {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
-	rn.state = Candidate
+	rn.State = Candidate
 	rn.currentTerm++
 	rn.votedFor = rn.id // Vote its self
 	votes := 1
@@ -118,19 +117,19 @@ func (rn *RaftNode) startElection() {
 			}
 			defer conn.Close()
 
-			client := raftpb.NewRaftClient(conn)
+			client := pb.NewRaftClient(conn)
 			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 			defer cancel()
 
-			req := &raftpb.VoteRequest{CandidateId: rn.id, Term: int32(rn.currentTerm)}
+			req := &pb.VoteRequest{CandidateId: rn.id, Term: int32(rn.currentTerm)}
 			resp, err := client.RequestVote(ctx, req)
 			// log.Printf("[%s] Received response from %s: %v", rn.id, peer, resp)
 			if err == nil && resp.VoteGranted {
 				rn.mu.Lock()
 				votes++
 
-				if rn.state == Candidate && votes > len(rn.peers)/2 {
-					rn.state = Leader
+				if rn.State == Candidate && votes > len(rn.peers)/2 {
+					rn.State = Leader
 					rn.resetHeartbeatTimer()
 					log.Printf("[%s] Term %d: Received majority votes, becoming Leader", rn.id, rn.currentTerm)
 				}
@@ -141,7 +140,7 @@ func (rn *RaftNode) startElection() {
 }
 
 func (rn *RaftNode) sendHeartbeats() {
-	if rn.state != Leader {
+	if rn.State != Leader {
 		return
 	}
 
@@ -153,13 +152,15 @@ func (rn *RaftNode) sendHeartbeats() {
 			}
 			defer conn.Close()
 
-			client := raftpb.NewRaftClient(conn)
+			client := pb.NewRaftClient(conn)
 			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 			defer cancel()
 
-			_, err = client.Heartbeat(ctx, &raftpb.HeartbeatRequest{LeaderId: rn.id, Term: int32(rn.currentTerm)})
+			_, err = client.Heartbeat(ctx, &pb.HeartbeatRequest{LeaderId: rn.id, Term: int32(rn.currentTerm)})
 			if err != nil {
 				log.Printf("[%s] Term %d: Tried and failed to send heartbeat to %s: %v", rn.id, rn.currentTerm, peer, err)
+			} else {
+				// log.Printf("[%s] Term %d: Sent heartbeat to %s", rn.id, rn.currentTerm, peer)
 			}
 		}(peer)
 	}
@@ -167,21 +168,21 @@ func (rn *RaftNode) sendHeartbeats() {
 	rn.resetHeartbeatTimer()
 }
 
-func (rn *RaftNode) ReceiveHeartbeat(req *raftpb.HeartbeatRequest) (*raftpb.HeartbeatResponse, error) {
+func (rn *RaftNode) ReceiveHeartbeat(req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
 	if req.Term < int32(rn.currentTerm) {
-		return &raftpb.HeartbeatResponse{Success: false}, nil
+		return &pb.HeartbeatResponse{Success: false}, nil
 	}
 
 	if req.Term > int32(rn.currentTerm) {
 		rn.currentTerm = int(req.Term)
-		rn.state = Follower
+		rn.State = Follower
 		rn.votedFor = ""
 	}
 	rn.resetElectionTimer() // Reset election timer upon receiving valid heartbeat
-	return &raftpb.HeartbeatResponse{Success: true}, nil
+	return &pb.HeartbeatResponse{Success: true}, nil
 }
 
 func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
@@ -190,7 +191,7 @@ func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
 	if req.Term >= rn.currentTerm {
 		rn.currentTerm = req.Term
 		rn.votedFor = ""
-		rn.state = Follower
+		rn.State = Follower
 	}
 
 	voteGranted := false
@@ -222,6 +223,8 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 	// Nếu term của leader cao hơn, cập nhật term và ghi lại log mới
 	if req.Term > rn.currentTerm {
 		rn.currentTerm = req.Term
+		rn.State = Follower
+		rn.votedFor = ""
 	}
 
 	// // Reset to follower if leader term is higher or the same
@@ -240,7 +243,13 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 	// Thêm các entry vào log
 	rn.log = append(rn.log, req.Entries...)
 	rn.KVStore.SyncData(req.Entries) // Đồng bộ dữ liệu vào KVStore
-	log.Printf("Node %s Appending Entry: %v", rn.id, req.Entries)
+	
+	// log.Printf("Node %s Appending Entry: %v", rn.id, req.Entries)
+	// log.Printf("[%s] Term %d: Received AppendEntries from Leader %s, appending log: %v", rn.id, rn.currentTerm, req.LeaderId, req.Entries)
+	log.Printf("[%s] Term %d: Received AppendEntries from Leader %s", rn.id, rn.currentTerm, req.LeaderId)
+	log.Printf("\t\tLog entries: %v", req.Entries)
+
+
 
 	return &AppendResponse{
 		Term:    rn.currentTerm,

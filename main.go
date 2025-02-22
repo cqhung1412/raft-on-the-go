@@ -66,25 +66,27 @@ func runClient(leaderPort string, term int32) {
 	client := raftpb.NewRaftClient(conn)
 
 	// Tạo yêu cầu AppendEntries
+	entries := []string{"key1=value1", "key2=value2", "key3=value3"}
 	req := &raftpb.AppendRequest{
 		Term:    term,
-		Entries: []string{"sample log entry"}, // Đảm bảo bạn có dữ liệu entry hợp lệ
+		Entries: entries,
 	}
 
 	// Gửi yêu cầu AppendEntries
 	resp, err := client.AppendEntries(context.Background(), req)
 	if err != nil {
-		log.Fatalf("Lỗi khi gửi yêu cầu AppendEntries: %v", err)
+		log.Fatalf("Error when send AppendEntries: %v", err)
 	}
 
-	fmt.Printf("Phản hồi từ Leader: Term=%d, Success=%v\n", resp.Term, resp.Success)
+	fmt.Printf("Leader response: Term=%d, Success=%v\n", resp.Term, resp.Success)
 }
+
 
 func main() {
 	// Thêm flag cho client
-	clientFlag := flag.Bool("client", false, "Chạy client thay vì server")
-	leaderPort := flag.String("leader", "5001", "Cổng của Leader mà client sẽ gửi yêu cầu đến")
-	term := flag.Int("term", 1, "Term của Leader")
+	clientFlag := flag.Bool("client", false, "Run client to send request")
+	leaderPort := flag.String("leader", "5001", "Leader's port")
+	term := flag.Int("term", 1, "Leader's term")
 
 	flag.Parse()
 
