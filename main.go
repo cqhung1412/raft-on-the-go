@@ -8,6 +8,7 @@ import (
 	"net"
 	raftpb "raft-on-the-go/proto"
 	"raft-on-the-go/server"
+	"strconv"
 
 	"google.golang.org/grpc"
 )
@@ -32,6 +33,15 @@ func runServer() {
 			log.Fatalf("Closing listener %v failed: %v\n", i, err)
 		}
 		
+
+		// Tính toán cổng cho HTTP inspect: cộng thêm 1000 (ví dụ: 5001 -> 6001)
+		grpcPort, err := strconv.Atoi(port)
+		if err != nil {
+			log.Fatalf("Invalid port %s", port)
+		}
+		inspectPort := strconv.Itoa(grpcPort + 1000)
+
+		
 		// Tạo một node mới
 		nodeName := fmt.Sprintf("Node%d", i+1)
 		fmt.Printf("[%s] Starting process on port %s...\n", nodeName, port)
@@ -42,6 +52,10 @@ func runServer() {
 		// Tạo một goroutine để bắt đầu chạy node
 		go func() {
 			newNode.Start()
+		}()
+
+		go func() {
+			newNode.StartHTTP(inspectPort)
 		}()
 
 		// Nếu cổng trống, chương trình sẽ không tiếp tục kiểm tra các cổng còn lại

@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"fmt"
+	"encoding/json"
 	"log"
 	"net"
+	"net/http"
 	"time"
 	pb "raft-on-the-go/proto"
 	"raft-on-the-go/utils"
@@ -100,6 +102,7 @@ func NewNode(id, port string, peers []string) *Node {
 	}
 }
 
+// Start chạy gRPC server
 func (n *Node) Start() {
 	lis, err := net.Listen("tcp", ":"+n.port)
 	if err != nil {
@@ -114,3 +117,28 @@ func (n *Node) Start() {
 		log.Fatalf("%s failed to serve: %v", n.id, err)
 	}
 }
+
+
+// inspectHandler trả về thông tin node ở định dạng JSON
+func (n *Node) inspectHandler(w http.ResponseWriter, r *http.Request) {
+	data := map[string]interface{}{
+		"node_id":      n.id,
+		"current_term": n.RaftNode.GetCurrentTerm(),
+		"state":        n.RaftNode.State, 
+		"log_entries":  n.RaftNode.GetLog(),
+		"kv_store":     n.RaftNode.KVStore.GetStore(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+// StartHTTP chạy một HTTP server trên cổng được cung cấp, phục vụ endpoint /inspect
+func (n *Node) StartHTTP(httpPort string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/inspect", n.inspectHandler)
+	log.Printf("[%s] HTTP inspect endpoint running on port %s", n.id, httpPort)
+	if err := http.ListenAndServe(":"+httpPort, mux); err != nil {
+		log.Fatalf("[%s] HTTP server error: %v", n.id, err)
+	}
+}
+

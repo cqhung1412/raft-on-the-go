@@ -256,3 +256,21 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 		Success: true,
 	}
 }
+
+
+// GetCurrentTerm trả về currentTerm của RaftNode
+func (rn *RaftNode) GetCurrentTerm() int {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	return rn.currentTerm
+}
+
+// GetLog trả về bản sao log của RaftNode
+func (rn *RaftNode) GetLog() []string {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	// Trả về một bản sao để tránh race condition
+	logCopy := make([]string, len(rn.log))
+	copy(logCopy, rn.log)
+	return logCopy
+}
