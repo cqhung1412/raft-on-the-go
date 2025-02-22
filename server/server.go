@@ -48,7 +48,7 @@ func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 	})
 
 	// Nếu node này là Leader, tiến hành replicate entries tới các follower
-	if n.RaftNode.State == utils.Leader {
+	if n.RaftNode.GetState() == utils.Leader {
 		go n.replicateEntries(req)
 	}
 
@@ -124,7 +124,7 @@ func (n *Node) inspectHandler(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"node_id":      n.id,
 		"current_term": n.RaftNode.GetCurrentTerm(),
-		"state":        n.RaftNode.State, 
+		"state":        n.RaftNode.GetState().StateString(), 
 		"log_entries":  n.RaftNode.GetLog(),
 		"kv_store":     n.RaftNode.KVStore.GetStore(),
 	}

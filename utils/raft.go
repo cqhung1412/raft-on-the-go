@@ -31,7 +31,7 @@ type RaftNode struct {
 	peers          []string
 	currentTerm    int
 	votedFor       string
-	State          State
+	state          State
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
 	grpcServer     *grpc.Server
@@ -71,7 +71,7 @@ func NewRaftNode(id string, peers []string) *RaftNode {
 		peers:         peers,
 		currentTerm:   0,
 		votedFor:      "",
-		State:         State(Follower),
+		state:         State(Follower),
 		grpcServer:    grpc.NewServer(),
 		KVStore:       NewKVStore(),
 		log:           []string{},
@@ -101,7 +101,7 @@ func (rn *RaftNode) startElection() {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
-	rn.State = Candidate
+	rn.state = Candidate
 	rn.currentTerm++
 	rn.votedFor = rn.id // Vote its self
 	votes := 1
@@ -128,8 +128,8 @@ func (rn *RaftNode) startElection() {
 				rn.mu.Lock()
 				votes++
 
-				if rn.State == Candidate && votes > len(rn.peers)/2 {
-					rn.State = Leader
+				if rn.state == Candidate && votes > len(rn.peers)/2 {
+					rn.state = Leader
 					rn.resetHeartbeatTimer()
 					log.Printf("[%s] Term %d: Received majority votes, becoming Leader", rn.id, rn.currentTerm)
 				}
@@ -140,7 +140,7 @@ func (rn *RaftNode) startElection() {
 }
 
 func (rn *RaftNode) sendHeartbeats() {
-	if rn.State != Leader {
+	if rn.state != Leader {
 		return
 	}
 
@@ -178,7 +178,7 @@ func (rn *RaftNode) ReceiveHeartbeat(req *pb.HeartbeatRequest) (*pb.HeartbeatRes
 
 	if req.Term > int32(rn.currentTerm) {
 		rn.currentTerm = int(req.Term)
-		rn.State = Follower
+		rn.state = Follower
 		rn.votedFor = ""
 	}
 	rn.resetElectionTimer() // Reset election timer upon receiving valid heartbeat
@@ -191,7 +191,7 @@ func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
 	if req.Term >= rn.currentTerm {
 		rn.currentTerm = req.Term
 		rn.votedFor = ""
-		rn.State = Follower
+		rn.state = Follower
 	}
 
 	voteGranted := false
@@ -223,7 +223,7 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 	// Nếu term của leader cao hơn, cập nhật term và ghi lại log mới
 	if req.Term > rn.currentTerm {
 		rn.currentTerm = req.Term
-		rn.State = Follower
+		rn.state = Follower
 		rn.votedFor = ""
 	}
 
@@ -273,4 +273,27 @@ func (rn *RaftNode) GetLog() []string {
 	logCopy := make([]string, len(rn.log))
 	copy(logCopy, rn.log)
 	return logCopy
+}
+
+
+
+// State trả về trạng thái hiện tại
+func (rn *RaftNode) GetState() State {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	return rn.state
+}
+
+// chuyen state tu int -> State string
+func (s State) StateString() string {
+	switch s {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	default:
+		return "Unknown"
+	}
 }
