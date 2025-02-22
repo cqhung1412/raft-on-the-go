@@ -24,6 +24,7 @@ const (
 	Leader
 )
 
+
 type RaftNode struct {
 	pb.UnimplementedRaftServer
 	mu             sync.Mutex
@@ -36,7 +37,7 @@ type RaftNode struct {
 	heartbeatTimer *time.Timer
 	grpcServer     *grpc.Server
 	KVStore        *KVStore
-	log            []string
+	log            []*pb.LogEntry
 	commitIndex    int
 	votesReceived  int
 }
@@ -53,10 +54,10 @@ type VoteResponse struct {
 	VoteGranted bool
 }
 
-type AppendRequest struct {
+type  AppendRequest struct {
 	Term         int
 	LeaderId     string
-	Entries      []string
+	Entries      []*pb.LogEntry
 	LeaderCommit int
 }
 
@@ -74,7 +75,7 @@ func NewRaftNode(id string, peers []string) *RaftNode {
 		state:         State(Follower),
 		grpcServer:    grpc.NewServer(),
 		KVStore:       NewKVStore(),
-		log:           []string{},
+		log:           []*pb.LogEntry{},
 		commitIndex:   0,
 		votesReceived: 0,
 	}
@@ -246,15 +247,22 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 		rn.votedFor = ""
 	}
 
-	// Thêm các entry vào log
-	rn.log = append(rn.log, req.Entries...)
-	rn.KVStore.SyncData(req.Entries) // Đồng bộ dữ liệu vào KVStore
-	
-	// log.Printf("Node %s Appending Entry: %v", rn.id, req.Entries)
-	// log.Printf("[%s] Term %d: Received AppendEntries from Leader %s, appending log: %v", rn.id, rn.currentTerm, req.LeaderId, req.Entries)
 	log.Printf("[%s] Term %d: Received AppendEntries from Leader %s", rn.id, rn.currentTerm, req.LeaderId)
-	log.Printf("\t\tLog entries: %v", req.Entries)
 
+	// Tạo log entry cho mỗi command và append vào log
+	for _, cmd := range req.Entries {
+		entry := &pb.LogEntry{
+			Index:   int32(len(rn.log) + 1),  // Có thể sử dụng commitIndex + 1 hoặc len(rn.log)+1
+			Term:    int32(rn.currentTerm),
+			Command: cmd.Command,
+		}
+		rn.log = append(rn.log, entry)
+		log.Printf("[%s] Term %d: Apply command: %v - at index %d",  rn.id, rn.currentTerm, entry.Command, entry.Index)
+	}
+
+	// Thêm các entry vào log
+	rn.KVStore.SyncData(req.Entries)
+	
 	return &AppendResponse{
 		Term:    rn.currentTerm,
 		Success: true,
@@ -270,11 +278,11 @@ func (rn *RaftNode) GetCurrentTerm() int {
 }
 
 // GetLog trả về bản sao log của RaftNode
-func (rn *RaftNode) GetLog() []string {
+func (rn *RaftNode) GetLog() []*pb.LogEntry {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 	// Trả về một bản sao để tránh race condition
-	logCopy := make([]string, len(rn.log))
+	logCopy := make([]*pb.LogEntry, len(rn.log))
 	copy(logCopy, rn.log)
 	return logCopy
 }

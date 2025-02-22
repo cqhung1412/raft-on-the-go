@@ -10,6 +10,12 @@ service Raft {
   rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
 }
 
+message LogEntry {
+  int32 index = 1;
+  int32 term = 2;
+  string command = 3;
+}
+
 message VoteRequest {
   int32 term = 1;
   string candidateId = 2;
@@ -25,7 +31,7 @@ message VoteResponse {
 message AppendRequest {
   int32 term = 1;
   string leaderId = 2;
-  repeated string entries = 3;
+  repeated LogEntry entries = 3;
   int32 leaderCommit = 4;
 }
 

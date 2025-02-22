@@ -80,7 +80,20 @@ func runClient(leaderPort string, term int32) {
 	client := raftpb.NewRaftClient(conn)
 
 	// Tạo yêu cầu AppendEntries
-	entries := []string{"key1=value1", "key2=value2", "key3=value3"}
+	entries := []*raftpb.LogEntry{
+		{
+			Term:    term, // giả sử term có kiểu int32
+			Command: "key1=value1",
+		},
+		{
+			Term:    term,
+			Command: "key2=value2",
+		},
+		{
+			Term:    term,
+			Command: "key3=value3",
+		},
+	}
 	req := &raftpb.AppendRequest{
 		Term:    term,
 		Entries: entries,
