@@ -49,6 +49,11 @@ func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 
 	// Nếu node này là Leader, tiến hành replicate entries tới các follower
 	if n.RaftNode.GetState() == utils.Leader {
+		// Nếu leader nhận được request mà LeaderId rỗng, tự gán giá trị cho nó.
+		if req.LeaderId == "" {
+			req.LeaderId = n.id
+		}
+
 		go n.replicateEntries(req)
 	}
 
@@ -71,11 +76,11 @@ func (n *Node) replicateEntries(req *pb.AppendRequest) {
 			}
 			defer conn.Close()
 
-			client := pb.NewRaftClient(conn)
+			follower := pb.NewRaftClient(conn)
 			ctx, cancel := context.WithTimeout(context.Background(), 1000 * time.Millisecond)
 			defer cancel()
 
-			resp, err := client.AppendEntries(ctx, req)
+			resp, err := follower.AppendEntries(ctx, req)
 			if err != nil {
 				log.Printf("[%s] Error replicating to follower %s: %v", n.id, peer, err)
 			} else {

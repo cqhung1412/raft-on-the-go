@@ -123,7 +123,7 @@ func (rn *RaftNode) startElection() {
 
 			req := &pb.VoteRequest{CandidateId: rn.id, Term: int32(rn.currentTerm)}
 			resp, err := client.RequestVote(ctx, req)
-			// log.Printf("[%s] Received response from %s: %v", rn.id, peer, resp)
+			
 			if err == nil && resp.VoteGranted {
 				rn.mu.Lock()
 				votes++
@@ -220,25 +220,31 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 		}
 	}
 
+	// Nếu node không phải là Leader, tức là đang ở trạng thái Follower,
+	// và nếu LeaderId trong request không khớp với leader đã được công nhận (hoặc rỗng),
+	// ta từ chối yêu cầu.
+	// Ở ví dụ này, chúng ta giả sử rằng follower chỉ chấp nhận nếu nó tự nhận mình là follower của leader.
+	// Nếu nó nhận yêu cầu AppendEntries trong trạng thái Follower từ nguồn không xác định, trả về false.
+	if rn.state != Leader {
+		// Ở một hệ thống Raft hoàn chỉnh, follower sẽ chấp nhận các AppendEntries từ leader hợp lệ
+		// và cập nhật lại leader hiện tại. Tuy nhiên, nếu nhận được request từ một nguồn khác
+		// (ví dụ, từ client gửi trực tiếp), LeaderId có thể không hợp lệ.
+		// Ở đây, nếu LeaderId rỗng hoặc không khớp (nếu bạn có lưu leader hiện tại), thì từ chối.
+		if req.LeaderId == "" /* || req.LeaderId != rn.leaderID (nếu bạn lưu thông tin leader) */ {
+			log.Printf("[%s] Term %d: Rejecting AppendEntries from invalid source (LeaderId='%s')", rn.id, rn.currentTerm, req.LeaderId)
+			return &AppendResponse{
+				Term:    rn.currentTerm,
+				Success: false,
+			}
+		}
+	}
+
 	// Nếu term của leader cao hơn, cập nhật term và ghi lại log mới
 	if req.Term > rn.currentTerm {
 		rn.currentTerm = req.Term
 		rn.state = Follower
 		rn.votedFor = ""
 	}
-
-	// // Reset to follower if leader term is higher or the same
-	// rn.state = Follower
-	// rn.currentTerm = req.Term
-	// rn.resetElectionTimer()
-
-
-	// if len(req.Entries) > 0 {
-	// 	rn.log = append(rn.log, req.Entries...)
-	// 	log.Printf("[%s] Term %d: Received AppendEntries from %s", rn.id, rn.currentTerm, req.LeaderId)
-	// } else {
-	// 	log.Printf("[%s] Term %d: Received HeartBeat from leader %s", rn.id, rn.currentTerm, req.LeaderId)
-	// }
 
 	// Thêm các entry vào log
 	rn.log = append(rn.log, req.Entries...)
@@ -248,8 +254,6 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 	// log.Printf("[%s] Term %d: Received AppendEntries from Leader %s, appending log: %v", rn.id, rn.currentTerm, req.LeaderId, req.Entries)
 	log.Printf("[%s] Term %d: Received AppendEntries from Leader %s", rn.id, rn.currentTerm, req.LeaderId)
 	log.Printf("\t\tLog entries: %v", req.Entries)
-
-
 
 	return &AppendResponse{
 		Term:    rn.currentTerm,
