@@ -36,7 +36,7 @@ func (kv *KVStore) GetStore() map[string]string {
 
 
 // SyncData đồng bộ dữ liệu giữa các nút (cập nhật từ các bản ghi log).
-func (kv *KVStore) SyncData(entries []*pb.LogEntry) {
+func (kv *KVStore) SyncData(entries []*pb.LogEntry) {	
 	for _, entry := range entries {
 		// Giả sử mỗi entry là một cặp key-value dưới dạng "key=value"
 		parts := strings.Split(entry.Command, "=")

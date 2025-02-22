@@ -38,7 +38,9 @@ func (n *Node) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteRe
 
 func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.AppendResponse, error) {
 	// Cập nhật dữ liệu vào KVStore (lưu trữ log entries)
-	n.RaftNode.KVStore.SyncData(req.Entries)
+	if req.LeaderId != "" {
+		n.RaftNode.KVStore.SyncData(req.Entries)
+	}
 
 	response := n.RaftNode.HandleAppendEntries(&utils.AppendRequest{
 		Term:         int(req.Term),
