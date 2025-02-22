@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	pb "raft-on-the-go/proto"
+	raftpb "raft-on-the-go/proto"
 	"raft-on-the-go/utils"
 	"sync"
 	"time"
@@ -194,11 +195,44 @@ func (n *Node) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(data)
 }
 
+func (n *Node) appendEntryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req pb.AppendRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if n.RaftNode.GetState() != utils.Leader {
+		http.Error(w, "Node is not a leader", http.StatusForbidden)
+		return
+	}
+
+	ctx := context.Background()
+	response, _ := n.AppendEntries(ctx, &raftpb.AppendRequest{
+		Term:         int32(n.RaftNode.GetCurrentTerm()),
+		LeaderId:     n.id,
+		Entries:      req.Entries,
+		LeaderCommit: int32(n.RaftNode.GetCommitIndex()),
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(&pb.AppendResponse{
+		Term:    int32(response.Term),
+		Success: response.Success,
+	})
+}
+
 // StartHTTP chạy một HTTP server trên cổng được cung cấp, phục vụ endpoint /inspect
 func (n *Node) StartHTTP(httpPort string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/inspect", n.inspectHandler)
 	mux.HandleFunc("/shutdown", n.shutdownHandler)
+	mux.HandleFunc("/append", n.appendEntryHandler)
 	log.Printf("[%s] HTTP inspect endpoint running on port %s", n.id, httpPort)
 	if err := http.ListenAndServe(":"+httpPort, mux); err != nil {
 		log.Fatalf("[%s] HTTP server error: %v", n.id, err)
