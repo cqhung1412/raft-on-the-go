@@ -4,9 +4,11 @@ import (
 	"context"
 	"log"
 	"math/rand"
+	pb "raft-on-the-go/proto"
+	"strings"
 	"sync"
 	"time"
-	pb "raft-on-the-go/proto"
+
 	"google.golang.org/grpc"
 )
 
@@ -39,6 +41,7 @@ type RaftNode struct {
 	KVStore        *KVStore
 	log            []*pb.LogEntry
 	commitIndex    int
+	lastApplied    int
 	votesReceived  int
 }
 
@@ -189,6 +192,7 @@ func (rn *RaftNode) ReceiveHeartbeat(req *pb.HeartbeatRequest) (*pb.HeartbeatRes
 func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
+
 	if req.Term >= rn.currentTerm {
 		rn.currentTerm = req.Term
 		rn.votedFor = ""
@@ -259,14 +263,49 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 		rn.log = append(rn.log, entry)
 		log.Printf("[%s] Term %d: Apply command: %v - at index %d",  rn.id, rn.currentTerm, entry.Command, entry.Index)
 	}
+	
+	// Cập nhật commitIndex nếu LeaderCommit (gửi từ leader) cao hơn commitIndex hiện tại của follower
+    if int(req.LeaderCommit) > rn.commitIndex {
+        newCommitIndex := int(req.LeaderCommit)
+        if newCommitIndex > len(rn.log) {
+            newCommitIndex = len(rn.log)
+        }
+        rn.updateCommitIndexInternal(newCommitIndex)
+    }
 
-	// Thêm các entry vào log
-	rn.KVStore.SyncData(req.Entries)
 	
 	return &AppendResponse{
 		Term:    rn.currentTerm,
 		Success: true,
 	}
+}
+
+
+// UpdateCommitIndex là phiên bản exported, tự lock mutex
+func (rn *RaftNode) UpdateCommitIndex(newCommitIndex int) {
+    rn.mu.Lock()
+    defer rn.mu.Unlock()
+    rn.updateCommitIndexInternal(newCommitIndex)
+}
+
+
+// updateCommitIndexInternal cập nhật commitIndex và apply các entry mới.
+// Lưu ý: Hàm này giả định rằng rn.mu đã được lock.
+func (rn *RaftNode) updateCommitIndexInternal(newCommitIndex int) {
+    if newCommitIndex > rn.commitIndex {
+        rn.commitIndex = newCommitIndex
+        log.Printf("[%s] Term %d: Updated commitIndex to %d", rn.id, rn.currentTerm, rn.commitIndex)
+        // Áp dụng các entry từ lastApplied+1 đến commitIndex
+        for rn.lastApplied < rn.commitIndex {
+            rn.lastApplied++
+            entry := rn.log[rn.lastApplied-1] // Vì rn.lastApplied tính theo 1-indexed
+            parts := strings.SplitN(entry.Command, "=", 2)
+            if len(parts) == 2 {
+                rn.KVStore.Set(parts[0], parts[1])
+            }
+            log.Printf("[%s] Term %d: Applied entry at index %d, command: %s", rn.id, rn.currentTerm, entry.Index, entry.Command)
+        }
+    }
 }
 
 
@@ -288,13 +327,27 @@ func (rn *RaftNode) GetLog() []*pb.LogEntry {
 }
 
 
-
-// State trả về trạng thái hiện tại
+// GetState trả về trạng thái hiện tại
 func (rn *RaftNode) GetState() State {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 	return rn.state
 }
+
+// GetCommitIndex trả về commitIndex của RaftNode
+func (rn *RaftNode) GetCommitIndex() int {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	return rn.commitIndex
+}
+
+// GetLastApply trả về lastApply của RaftNode
+func (rn *RaftNode) GetLastApply() int {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	return rn.lastApplied
+}
+
 
 // chuyen state tu int -> State string
 func (s State) StateString() string {

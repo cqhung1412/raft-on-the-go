@@ -2,14 +2,16 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"time"
 	pb "raft-on-the-go/proto"
 	"raft-on-the-go/utils"
+	"sync"
+	"time"
+
 	"google.golang.org/grpc"
 )
 
@@ -67,28 +69,54 @@ func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 
 // Thêm phương thức replicateEntries cho Node
 func (n *Node) replicateEntries(req *pb.AppendRequest) {
-	// Lặp qua danh sách các peer (các follower)
+	var wg sync.WaitGroup
+	successCount := 1 // Leader tự đếm thành công vì leader đã append entry vào log
+	responseCh := make(chan bool, len(n.peers))
+
+	// Cập nhật LeaderCommit trong request theo commitIndex hiện tại của leader
+	req.LeaderCommit = int32(len(n.RaftNode.GetLog()))
+
+	// Gửi AppendEntries tới từng follower
 	for _, peer := range n.peers {
-		// Bạn có thể bỏ qua node hiện tại nếu cần
+		wg.Add(1)
 		go func(peer string) {
+			defer wg.Done()
 			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
 			if err != nil {
 				log.Printf("[%s] Failed to connect to follower %s: %v", n.id, peer, err)
+				responseCh <- false
 				return
 			}
 			defer conn.Close()
 
 			follower := pb.NewRaftClient(conn)
-			ctx, cancel := context.WithTimeout(context.Background(), 1000 * time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 			defer cancel()
 
 			resp, err := follower.AppendEntries(ctx, req)
 			if err != nil {
 				log.Printf("[%s] Error replicating to follower %s: %v", n.id, peer, err)
+				responseCh <- false
 			} else {
 				log.Printf("[%s] Follower %s responded: Term=%d, Success=%v", n.id, peer, resp.Term, resp.Success)
+				responseCh <- resp.Success
 			}
 		}(peer)
+	}
+
+	wg.Wait()
+	close(responseCh)
+
+	for success := range responseCh {
+		if success {
+			successCount++
+		}
+	}
+
+	// Nếu đa số các node (leader + follower) thành công, cập nhật commitIndex
+	if successCount > len(n.peers)/2 {
+		newCommitIndex := len(n.RaftNode.GetLog())
+		n.RaftNode.UpdateCommitIndex(newCommitIndex)
 	}
 }
 
@@ -133,6 +161,8 @@ func (n *Node) inspectHandler(w http.ResponseWriter, r *http.Request) {
 		"current_term": n.RaftNode.GetCurrentTerm(),
 		"state":        n.RaftNode.GetState().StateString(), 
 		"log_entries":  n.RaftNode.GetLog(),
+		"commit_index": n.RaftNode.GetCommitIndex(),
+		"last_applied": n.RaftNode.GetLastApply(),
 		"kv_store":     n.RaftNode.KVStore.GetStore(),
 	}
 	w.Header().Set("Content-Type", "application/json")

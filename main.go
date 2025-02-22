@@ -85,14 +85,6 @@ func runClient(leaderPort string, term int32) {
 			Term:    term, // giả sử term có kiểu int32
 			Command: "key1=value1",
 		},
-		{
-			Term:    term,
-			Command: "key2=value2",
-		},
-		{
-			Term:    term,
-			Command: "key3=value3",
-		},
 	}
 	req := &raftpb.AppendRequest{
 		Term:    term,
