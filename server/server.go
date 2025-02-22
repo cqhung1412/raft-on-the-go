@@ -18,10 +18,11 @@ import (
 type Node struct {
 	pb.RaftServer
 
-	id       string
-	port     string
-	peers    []string
-	RaftNode *utils.RaftNode
+	id         string
+	port       string
+	peers      []string
+	RaftNode   *utils.RaftNode
+	grpcServer *grpc.Server
 }
 
 func (n *Node) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
@@ -120,10 +121,9 @@ func (n *Node) replicateEntries(req *pb.AppendRequest) {
 	}
 }
 
-
 // Heartbeat RPC Implementation
 func (n *Node) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
-	log.Printf("[%s] Term %d: Received heartbeat from Leader %s ", n.id, req.Term, req.LeaderId)	
+	log.Printf("[%s] Term %d: Received heartbeat from Leader %s ", n.id, req.Term, req.LeaderId)
 
 	return n.RaftNode.ReceiveHeartbeat(req)
 }
@@ -146,6 +146,7 @@ func (n *Node) Start() {
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterRaftServer(grpcServer, n)
+	n.grpcServer = grpcServer
 
 	fmt.Printf("[%s] Running on port %s\n", n.id, n.port)
 	if err := grpcServer.Serve(lis); err != nil {
@@ -153,13 +154,12 @@ func (n *Node) Start() {
 	}
 }
 
-
 // inspectHandler trả về thông tin node ở định dạng JSON
 func (n *Node) inspectHandler(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"node_id":      n.id,
 		"current_term": n.RaftNode.GetCurrentTerm(),
-		"state":        n.RaftNode.GetState().StateString(), 
+		"state":        n.RaftNode.GetState().StateString(),
 		"log_entries":  n.RaftNode.GetLog(),
 		"commit_index": n.RaftNode.GetCommitIndex(),
 		"last_applied": n.RaftNode.GetLastApply(),
@@ -169,13 +169,38 @@ func (n *Node) inspectHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(data)
 }
 
+func (n *Node) shutdownHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
+
+	data := map[string]string{"message": "Unable to shutdown server"}
+	w.Header().Set("Content-Type", "application/json")
+
+	log.Printf("Initiating graceful shutdown for %s %s...", n.RaftNode.GetState().StateString(), n.id)
+	timer := time.AfterFunc(10*time.Second, func() {
+		log.Println("Server could not stop gracefully in time. Performing force shutdown.")
+		n.grpcServer.Stop()
+		data["message"] = "Server stopped forcefully"
+	})
+	defer timer.Stop()
+
+	n.RaftNode.Shutdown()
+	n.grpcServer.GracefulStop()
+	log.Println("Server stopped gracefully.")
+	data["message"] = "Server stopped gracefully"
+
+	json.NewEncoder(w).Encode(data)
+}
+
 // StartHTTP chạy một HTTP server trên cổng được cung cấp, phục vụ endpoint /inspect
 func (n *Node) StartHTTP(httpPort string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/inspect", n.inspectHandler)
+	mux.HandleFunc("/shutdown", n.shutdownHandler)
 	log.Printf("[%s] HTTP inspect endpoint running on port %s", n.id, httpPort)
 	if err := http.ListenAndServe(":"+httpPort, mux); err != nil {
 		log.Fatalf("[%s] HTTP server error: %v", n.id, err)
 	}
 }
-
