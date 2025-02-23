@@ -69,6 +69,9 @@ type AppendResponse struct {
 	Success bool
 }
 
+// NewRaftNode creates and returns a new RaftNode with the specified unique node identifier and list of peer addresses.
+// It initializes the node in the Follower state with a current term of 0, sets up a gRPC server and a key-value store, and prepares an empty log.
+// The function also resets the election timer and initializes the commit index, vote count, and shutdown channel for graceful termination.
 func NewRaftNode(id string, peers []string) *RaftNode {
 	rn := &RaftNode{
 		id:            id,

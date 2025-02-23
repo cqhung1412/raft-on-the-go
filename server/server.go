@@ -129,6 +129,8 @@ func (n *Node) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.Hea
 	return n.RaftNode.ReceiveHeartbeat(req)
 }
 
+// NewNode creates a new Node instance with the specified identifier, port, and peer addresses.
+// It also initializes the underlying Raft consensus mechanism by creating a new RaftNode with the provided id and peers.
 func NewNode(id, port string, peers []string) *Node {
 	return &Node{
 		id:       id,
