@@ -6,7 +6,23 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Function to cleanup existing rules
+# Cleans up existing iptables rules by flushing all rules, deleting user-defined chains,
+# and resetting the default policies for the INPUT, FORWARD, and OUTPUT chains to ACCEPT.
+#
+# This function restores iptables to a neutral state, ensuring that no residual rules interfere
+# with subsequent network partition operations.
+#
+# Globals:
+#   None
+#
+# Arguments:
+#   None
+#
+# Outputs:
+#   Writes a message to STDOUT indicating that the cleanup process has started.
+#
+# Example:
+#   cleanup_rules
 cleanup_rules() {
     echo "Cleaning up existing iptables rules..."
     iptables -F
@@ -16,7 +32,27 @@ cleanup_rules() {
     iptables -P OUTPUT ACCEPT
 }
 
-# Function to create partition rules
+# Creates iptables rules to partition network traffic between two sets of ports.
+#
+# This function sets up rules to block TCP traffic between two defined port groups:
+#   - Partition 1: Ports 5001, 5002, and 5003
+#   - Partition 2: Ports 5004 and 5005
+#
+# It appends iptables DROP rules for both incoming and outgoing packets, effectively isolating
+# the two partitions by preventing bidirectional communication.
+#
+# Globals:
+#   None
+#
+# Arguments:
+#   None
+#
+# Outputs:
+#   Updates the iptables configuration by appending new DROP rules.
+#
+# Example:
+#   # Partition network traffic between the specified port ranges
+#   create_partition_rules
 create_partition_rules() {
     # Block traffic between partitions
     # Block Partition 1 (5001-5003) from reaching Partition 2 (5004-5005)
@@ -36,13 +72,44 @@ create_partition_rules() {
     done
 }
 
-# Function to verify rules
+# Displays the current iptables rules in verbose format.
+#
+# Globals:
+#   None
+#
+# Arguments:
+#   None
+#
+# Outputs:
+#   Prints a header message followed by the detailed iptables rules to STDOUT.
+#
+# Example:
+#   verify_rules
 verify_rules() {
     echo "Current iptables rules:"
     iptables -L -n -v
 }
 
-# Function to remove partitioning
+# Removes network partitioning rules by resetting iptables.
+#
+# This function calls cleanup_rules to flush the existing iptables rules and reset the
+# default policies for the INPUT, OUTPUT, and FORWARD chains. It then prints a message
+# indicating that network partitioning has been removed.
+#
+# Globals:
+#   None.
+#
+# Arguments:
+#   None.
+#
+# Outputs:
+#   Prints a confirmation message to STDOUT.
+#
+# Returns:
+#   The exit status of cleanup_rules.
+#
+# Example:
+#   $ remove_partition
 remove_partition() {
     cleanup_rules
     echo "Network partitioning removed"

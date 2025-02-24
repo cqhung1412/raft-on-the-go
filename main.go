@@ -13,6 +13,11 @@ import (
 	"google.golang.org/grpc"
 )
 
+// runServer starts a Raft server node on the first available port within the range 5001 to 5005.
+// It sequentially checks each port for availability, and upon finding one, it computes an HTTP inspection port
+// by adding 1000 to the gRPC port, initializes a new node (excluding the chosen port from its peers),
+// and concurrently launches both the node’s gRPC and HTTP inspection services. The function then blocks indefinitely;
+// if no free port is detected in the range, it logs a fatal error and terminates the execution.
 func runServer() {
 	ports := []string{"5001", "5002", "5003", "5004", "5005"}
 
@@ -68,6 +73,12 @@ func runServer() {
 }
 
 
+// runClient connects to a Raft leader node via gRPC and sends an AppendEntries request.
+// 
+// It establishes a gRPC connection to the leader at the given port, constructs an AppendRequest with a log entry that includes
+// the specified term and a predefined command ("key1=value1"), and sends the request using the Raft service client. The function
+// prints the leader's response, indicating the term and whether the request was successful. If an error occurs during connection
+// or while sending the request, it logs a fatal error and terminates the program.
 func runClient(leaderPort string, term int32) {
 	// Kết nối tới Leader node qua gRPC
 	conn, err := grpc.Dial("localhost:"+leaderPort, grpc.WithInsecure())
@@ -101,6 +112,7 @@ func runClient(leaderPort string, term int32) {
 }
 
 
+// main is the entry point for the Raft-based gRPC application. It parses command-line flags to determine whether to run as a client or as a server. If the "--client" flag is set, main runs in client mode by connecting to a designated leader and sending an AppendEntries request; otherwise, it starts a server node.
 func main() {
 	// Thêm flag cho client
 	clientFlag := flag.Bool("client", false, "Run client to send request")
