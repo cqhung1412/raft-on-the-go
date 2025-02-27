@@ -49,6 +49,8 @@ func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 	response := n.RaftNode.HandleAppendEntries(&utils.AppendRequest{
 		Term:         int(req.Term),
 		LeaderId:     req.LeaderId,
+		PrevLogIndex: int(req.PrevLogIndex),
+		PrevLogTerm:  int(req.PrevLogTerm),
 		Entries:      req.Entries,
 		LeaderCommit: int(req.LeaderCommit),
 	})
@@ -64,8 +66,9 @@ func (n *Node) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 	}
 
 	return &pb.AppendResponse{
-		Term:    int32(response.Term),
-		Success: response.Success,
+		Term:      int32(response.Term),
+		Success:   response.Success,
+		NextIndex: int32(response.NextIndex),
 	}, nil
 }
 
@@ -75,8 +78,18 @@ func (n *Node) replicateEntries(req *pb.AppendRequest) {
 	successCount := 1 // Leader tự đếm thành công vì leader đã append entry vào log
 	responseCh := make(chan bool, len(n.peers))
 
-	// Cập nhật LeaderCommit trong request theo commitIndex hiện tại của leader
-	req.LeaderCommit = int32(len(n.RaftNode.GetLog()))
+	// Get log info for prevLogIndex and prevLogTerm
+	prevLogIndex := 0
+	prevLogTerm := 0
+	if len(n.RaftNode.GetLog()) > 0 {
+		prevLogIndex = len(n.RaftNode.GetLog())
+		prevLogTerm = int(n.RaftNode.GetLog()[prevLogIndex-1].Term)
+	}
+
+	// Cập nhật request fields
+	req.LeaderCommit = int32(n.RaftNode.GetCommitIndex())
+	req.PrevLogIndex = int32(prevLogIndex)
+	req.PrevLogTerm = int32(prevLogTerm)
 
 	// Gửi AppendEntries tới từng follower
 	for _, peer := range n.peers {
@@ -100,7 +113,23 @@ func (n *Node) replicateEntries(req *pb.AppendRequest) {
 				log.Printf("[%s] Error replicating to follower %s: %v", n.id, peer, err)
 				responseCh <- false
 			} else {
-				log.Printf("[%s] Follower %s responded: Term=%d, Success=%v", n.id, peer, resp.Term, resp.Success)
+				log.Printf("[%s] Follower %s responded: Term=%d, Success=%v, NextIndex=%d",
+					n.id, peer, resp.Term, resp.Success, resp.NextIndex)
+
+				// If follower's term is higher than ours, we should step down
+				if resp.Term > req.Term {
+					log.Printf("[%s] Stepping down due to higher term from %s: %d > %d",
+						n.id, peer, resp.Term, req.Term)
+					n.RaftNode.HandleAppendEntries(&utils.AppendRequest{
+						Term:         int(resp.Term),
+						LeaderId:     "", // We don't know who the leader is
+						PrevLogIndex: 0,
+						PrevLogTerm:  0,
+						Entries:      nil,
+						LeaderCommit: 0,
+					})
+				}
+
 				responseCh <- resp.Success
 			}
 		}(peer)
@@ -126,7 +155,14 @@ func (n *Node) replicateEntries(req *pb.AppendRequest) {
 func (n *Node) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
 	log.Printf("[%s] Term %d: Received heartbeat from Leader %s ", n.id, req.Term, req.LeaderId)
 
-	return n.RaftNode.ReceiveHeartbeat(req)
+	// If this node was previously shutdown and restarted, the leader needs to resync it
+	response, err := n.RaftNode.ReceiveHeartbeat(req)
+
+	if err == nil && response.NeedsSync {
+		log.Printf("[%s] Term %d: Node needs log synchronization with Leader %s", n.id, req.Term, req.LeaderId)
+	}
+
+	return response, err
 }
 
 // NewNode creates a new Node instance with the specified identifier, port, and peer addresses.
@@ -214,18 +250,29 @@ func (n *Node) appendEntryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get log info for prevLogIndex and prevLogTerm
+	prevLogIndex := 0
+	prevLogTerm := 0
+	if len(n.RaftNode.GetLog()) > 0 {
+		prevLogIndex = len(n.RaftNode.GetLog())
+		prevLogTerm = int(n.RaftNode.GetLog()[prevLogIndex-1].Term)
+	}
+
 	ctx := context.Background()
 	response, _ := n.AppendEntries(ctx, &raftpb.AppendRequest{
 		Term:         int32(n.RaftNode.GetCurrentTerm()),
 		LeaderId:     n.id,
+		PrevLogIndex: int32(prevLogIndex),
+		PrevLogTerm:  int32(prevLogTerm),
 		Entries:      req.Entries,
 		LeaderCommit: int32(n.RaftNode.GetCommitIndex()),
 	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(&pb.AppendResponse{
-		Term:    int32(response.Term),
-		Success: response.Success,
+		Term:      int32(response.Term),
+		Success:   response.Success,
+		NextIndex: response.NextIndex,
 	})
 }
 

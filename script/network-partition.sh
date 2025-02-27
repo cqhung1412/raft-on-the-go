@@ -55,19 +55,36 @@ cleanup_rules() {
 #   create_partition_rules
 create_partition_rules() {
     # Block traffic between partitions
-    # Block Partition 1 (5001-5003) from reaching Partition 2 (5004-5005)
-    for source_port in 5001 5002 5003; do
-        for dest_port in 5004 5005; do
-            iptables -A INPUT -p tcp --sport $source_port --dport $dest_port -j DROP
-            iptables -A OUTPUT -p tcp --sport $source_port --dport $dest_port -j DROP
+    # Create two partitions:
+    # Partition 1: Ports 5001, 5002, 5003
+    # Partition 2: Ports 5004, 5005
+    
+    # Block traffic to Partition 2 from Partition 1 
+    for src_port in 5001 5002 5003; do
+        for dst_port in 5004 5005; do
+            # Block outgoing traffic to Partition 2 nodes
+            iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport $dst_port -j DROP
         done
     done
-
-    # Block Partition 2 (5004-5005) from reaching Partition 1 (5001-5003)
-    for source_port in 5004 5005; do
-        for dest_port in 5001 5002 5003; do
-            iptables -A INPUT -p tcp --sport $source_port --dport $dest_port -j DROP
-            iptables -A OUTPUT -p tcp --sport $source_port --dport $dest_port -j DROP
+    
+    # Block traffic to Partition 1 from Partition 2
+    for src_port in 5004 5005; do
+        for dst_port in 5001 5002 5003; do
+            # Block outgoing traffic to Partition 1 nodes
+            iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport $dst_port -j DROP
+        done
+    done
+    
+    # Also block the HTTP inspect ports (gRPC port + 1000)
+    for src_port in 6001 6002 6003; do
+        for dst_port in 6004 6005; do
+            iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport $dst_port -j DROP
+        done
+    done
+    
+    for src_port in 6004 6005; do
+        for dst_port in 6001 6002 6003; do
+            iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport $dst_port -j DROP
         done
     done
 }

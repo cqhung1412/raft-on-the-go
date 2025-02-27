@@ -43,6 +43,11 @@ type RaftNode struct {
 	lastApplied    int
 	votesReceived  int
 	shutdownCh     chan struct{}
+
+	// Leader state - only used when node is leader
+	nextIndex  map[string]int // For each peer, index of the next log entry to send
+	matchIndex map[string]int // For each peer, index of highest log entry known to be replicated
+	leaderID   string         // ID of the current leader (empty if unknown)
 }
 
 type VoteRequest struct {
@@ -60,13 +65,16 @@ type VoteResponse struct {
 type AppendRequest struct {
 	Term         int
 	LeaderId     string
+	PrevLogIndex int
+	PrevLogTerm  int
 	Entries      []*pb.LogEntry
 	LeaderCommit int
 }
 
 type AppendResponse struct {
-	Term    int
-	Success bool
+	Term      int
+	Success   bool
+	NextIndex int
 }
 
 // NewRaftNode creates and returns a new RaftNode with the specified unique node identifier and list of peer addresses.
@@ -85,6 +93,9 @@ func NewRaftNode(id string, peers []string) *RaftNode {
 		commitIndex:   0,
 		votesReceived: 0,
 		shutdownCh:    make(chan struct{}),
+		nextIndex:     make(map[string]int),
+		matchIndex:    make(map[string]int),
+		leaderID:      "",
 	}
 	rn.resetElectionTimer()
 	return rn
@@ -115,6 +126,14 @@ func (rn *RaftNode) startElection() {
 	votes := 1
 	log.Printf("[%s] Term %d: Initialized, waiting for election timeout...", rn.id, rn.currentTerm)
 
+	// Get the last log info for the vote request
+	lastLogIndex := 0
+	lastLogTerm := 0
+	if len(rn.log) > 0 {
+		lastLogIndex = len(rn.log)
+		lastLogTerm = int(rn.log[lastLogIndex-1].Term)
+	}
+
 	// send RequestVote for other node
 	for _, peer := range rn.peers {
 		go func(peer string) {
@@ -129,7 +148,12 @@ func (rn *RaftNode) startElection() {
 			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 			defer cancel()
 
-			req := &pb.VoteRequest{CandidateId: rn.id, Term: int32(rn.currentTerm)}
+			req := &pb.VoteRequest{
+				CandidateId:  rn.id,
+				Term:         int32(rn.currentTerm),
+				LastLogIndex: int32(lastLogIndex),
+				LastLogTerm:  int32(lastLogTerm),
+			}
 			resp, err := client.RequestVote(ctx, req)
 
 			if err == nil && resp.VoteGranted {
@@ -138,6 +162,13 @@ func (rn *RaftNode) startElection() {
 
 				if rn.state == Candidate && votes > len(rn.peers)/2 {
 					rn.state = Leader
+
+					// Initialize leader state when becoming leader
+					for _, p := range rn.peers {
+						rn.nextIndex[p] = len(rn.log) + 1
+						rn.matchIndex[p] = 0
+					}
+
 					rn.resetHeartbeatTimer()
 					log.Printf("[%s] Term %d: Received majority votes, becoming Leader", rn.id, rn.currentTerm)
 				}
@@ -148,15 +179,24 @@ func (rn *RaftNode) startElection() {
 }
 
 func (rn *RaftNode) sendHeartbeats() {
+	rn.mu.Lock()
 	if rn.state != Leader {
+		rn.mu.Unlock()
 		return
 	}
+
+	// Leader state data for the heartbeat
+	currentTerm := rn.currentTerm
+	commitIndex := rn.commitIndex
+	lastLogIndex := len(rn.log)
+	rn.mu.Unlock()
 
 	for _, peer := range rn.peers {
 		go func(peer string) {
 			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
 			if err != nil {
-				log.Printf("[%s] Term %d: Failed to send heartbeat to %s: %v", rn.id, rn.currentTerm, peer, err)
+				log.Printf("[%s] Term %d: Failed to connect to %s for heartbeat: %v", rn.id, currentTerm, peer, err)
+				return
 			}
 			defer conn.Close()
 
@@ -164,11 +204,61 @@ func (rn *RaftNode) sendHeartbeats() {
 			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 			defer cancel()
 
-			_, err = client.Heartbeat(ctx, &pb.HeartbeatRequest{LeaderId: rn.id, Term: int32(rn.currentTerm)})
+			req := &pb.HeartbeatRequest{
+				LeaderId:     rn.id,
+				Term:         int32(currentTerm),
+				LeaderCommit: int32(commitIndex),
+				LastLogIndex: int32(lastLogIndex),
+			}
+
+			resp, err := client.Heartbeat(ctx, req)
 			if err != nil {
-				log.Printf("[%s] Term %d: Tried and failed to send heartbeat to %s: %v", rn.id, rn.currentTerm, peer, err)
-			} else {
-				// log.Printf("[%s] Term %d: Sent heartbeat to %s", rn.id, rn.currentTerm, peer)
+				log.Printf("[%s] Term %d: Tried and failed to send heartbeat to %s: %v", rn.id, currentTerm, peer, err)
+				return
+			}
+
+			// If follower's log is behind, send AppendEntries to sync logs
+			if resp.NeedsSync {
+				rn.mu.Lock()
+				// Check if we're still leader
+				if rn.state != Leader {
+					rn.mu.Unlock()
+					return
+				}
+
+				nextIdx := rn.nextIndex[peer]
+				// If follower's log is behind, adjust nextIndex
+				if int(resp.LastLogIndex) < len(rn.log) {
+					// Send log entries starting from nextIdx
+					prevLogIndex := nextIdx - 1
+					prevLogTerm := 0
+
+					if prevLogIndex > 0 && prevLogIndex <= len(rn.log) {
+						prevLogTerm = int(rn.log[prevLogIndex-1].Term)
+					}
+
+					// Prepare log entries to send
+					entries := []*pb.LogEntry{}
+					if nextIdx <= len(rn.log) {
+						entries = rn.log[nextIdx-1:]
+					}
+
+					appendReq := &pb.AppendRequest{
+						Term:         int32(rn.currentTerm),
+						LeaderId:     rn.id,
+						PrevLogIndex: int32(prevLogIndex),
+						PrevLogTerm:  int32(prevLogTerm),
+						Entries:      entries,
+						LeaderCommit: int32(rn.commitIndex),
+					}
+
+					rn.mu.Unlock()
+
+					// Send AppendEntries RPC to sync logs
+					go rn.sendAppendEntriesToPeer(peer, appendReq)
+				} else {
+					rn.mu.Unlock()
+				}
 			}
 		}(peer)
 	}
@@ -176,21 +266,133 @@ func (rn *RaftNode) sendHeartbeats() {
 	rn.resetHeartbeatTimer()
 }
 
+// Helper method to send AppendEntries to a specific peer for log replication
+func (rn *RaftNode) sendAppendEntriesToPeer(peer string, req *pb.AppendRequest) {
+	conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
+	if err != nil {
+		log.Printf("[%s] Term %d: Failed to connect to %s for log replication: %v", rn.id, req.Term, peer, err)
+		return
+	}
+	defer conn.Close()
+
+	client := pb.NewRaftClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+	defer cancel()
+
+	resp, err := client.AppendEntries(ctx, req)
+	if err != nil {
+		log.Printf("[%s] Term %d: Failed to replicate logs to %s: %v", rn.id, req.Term, peer, err)
+		return
+	}
+
+	// Handle the response
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+
+	// If the follower rejected our request because its term is higher
+	if !resp.Success && resp.Term > int32(rn.currentTerm) {
+		rn.currentTerm = int(resp.Term)
+		rn.state = Follower
+		rn.votedFor = ""
+		rn.resetElectionTimer()
+		return
+	}
+
+	// Update nextIndex and matchIndex for this peer if successful
+	if resp.Success {
+		rn.nextIndex[peer] = int(resp.NextIndex)
+		rn.matchIndex[peer] = rn.nextIndex[peer] - 1
+
+		// Update commitIndex if needed
+		rn.updateCommitIndexBasedOnReplications()
+	} else {
+		// If the AppendEntries failed, decrement nextIndex and try again
+		if rn.nextIndex[peer] > 1 {
+			rn.nextIndex[peer]--
+		}
+	}
+}
+
+// Helper method to determine if a log entry is committed based on replication to followers
+func (rn *RaftNode) updateCommitIndexBasedOnReplications() {
+	// Sort the match indices to find the median (majority)
+	matchIndices := make([]int, 0, len(rn.peers))
+	for _, idx := range rn.matchIndex {
+		matchIndices = append(matchIndices, idx)
+	}
+
+	// Add leader's match index (which is essentially the log length)
+	matchIndices = append(matchIndices, len(rn.log))
+
+	// Simple sort to find the median - in production you'd optimize this
+	for i := 0; i < len(matchIndices); i++ {
+		for j := i + 1; j < len(matchIndices); j++ {
+			if matchIndices[i] > matchIndices[j] {
+				matchIndices[i], matchIndices[j] = matchIndices[j], matchIndices[i]
+			}
+		}
+	}
+
+	// The middle element is the majority-replicated index
+	majorityIndex := matchIndices[len(matchIndices)/2]
+
+	// If the majority index is greater than our commit index, update it
+	if majorityIndex > rn.commitIndex &&
+		(len(rn.log) >= majorityIndex) &&
+		(int(rn.log[majorityIndex-1].Term) == rn.currentTerm) {
+		rn.updateCommitIndexInternal(majorityIndex)
+	}
+}
+
 func (rn *RaftNode) ReceiveHeartbeat(req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
-	if req.Term < int32(rn.currentTerm) {
-		return &pb.HeartbeatResponse{Success: false}, nil
+	response := &pb.HeartbeatResponse{
+		Success:      false,
+		Term:         int32(rn.currentTerm),
+		LastLogIndex: int32(len(rn.log)),
+		NeedsSync:    false,
 	}
 
+	// If the leader's term is less than ours, reject heartbeat
+	if req.Term < int32(rn.currentTerm) {
+		return response, nil
+	}
+
+	// If the leader's term is greater than ours, update our term
 	if req.Term > int32(rn.currentTerm) {
 		rn.currentTerm = int(req.Term)
 		rn.state = Follower
 		rn.votedFor = ""
 	}
-	rn.resetElectionTimer() // Reset election timer upon receiving valid heartbeat
-	return &pb.HeartbeatResponse{Success: true}, nil
+
+	// Store the leader ID
+	rn.leaderID = req.LeaderId
+
+	// Reset election timer upon receiving valid heartbeat
+	rn.resetElectionTimer()
+
+	// Check if our log is behind the leader's
+	response.Success = true
+
+	// If leader has more entries than us, or if our commit index is behind
+	// leader's commit index, we need to sync
+	if req.LastLogIndex > int32(len(rn.log)) ||
+		req.LeaderCommit > int32(rn.commitIndex) {
+		response.NeedsSync = true
+	}
+
+	// Update commit index if needed
+	if req.LeaderCommit > int32(rn.commitIndex) {
+		newCommitIdx := int(req.LeaderCommit)
+		if newCommitIdx > len(rn.log) {
+			newCommitIdx = len(rn.log)
+		}
+		rn.updateCommitIndexInternal(newCommitIdx)
+	}
+
+	return response, nil
 }
 
 func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
@@ -221,54 +423,104 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
-	// Nếu term của leader thấp hơn, từ chối yêu cầu
+	response := &AppendResponse{
+		Term:      rn.currentTerm,
+		Success:   false,
+		NextIndex: len(rn.log) + 1,
+	}
+
+	// If leader's term is less than ours, reject the request
 	if req.Term < rn.currentTerm {
-		return &AppendResponse{
-			Term:    rn.currentTerm,
-			Success: false,
-		}
+		log.Printf("[%s] Term %d: Rejecting AppendEntries from leader %s with lesser term %d",
+			rn.id, rn.currentTerm, req.LeaderId, req.Term)
+		return response
 	}
 
-	// Nếu node không phải là Leader, tức là đang ở trạng thái Follower,
-	// và nếu LeaderId trong request không khớp với leader đã được công nhận (hoặc rỗng),
-	// ta từ chối yêu cầu.
-	// Ở ví dụ này, chúng ta giả sử rằng follower chỉ chấp nhận nếu nó tự nhận mình là follower của leader.
-	// Nếu nó nhận yêu cầu AppendEntries trong trạng thái Follower từ nguồn không xác định, trả về false.
-	if rn.state != Leader {
-		// Ở một hệ thống Raft hoàn chỉnh, follower sẽ chấp nhận các AppendEntries từ leader hợp lệ
-		// và cập nhật lại leader hiện tại. Tuy nhiên, nếu nhận được request từ một nguồn khác
-		// (ví dụ, từ client gửi trực tiếp), LeaderId có thể không hợp lệ.
-		// Ở đây, nếu LeaderId rỗng hoặc không khớp (nếu bạn có lưu leader hiện tại), thì từ chối.
-		if req.LeaderId == "" /* || req.LeaderId != rn.leaderID (nếu bạn lưu thông tin leader) */ {
-			log.Printf("[%s] Term %d: Rejecting AppendEntries from invalid source (LeaderId='%s')", rn.id, rn.currentTerm, req.LeaderId)
-			return &AppendResponse{
-				Term:    rn.currentTerm,
-				Success: false,
-			}
-		}
-	}
-
-	// Nếu term của leader cao hơn, cập nhật term và ghi lại log mới
+	// If leader's term is greater than ours, update our term
 	if req.Term > rn.currentTerm {
 		rn.currentTerm = req.Term
 		rn.state = Follower
 		rn.votedFor = ""
+		response.Term = rn.currentTerm
 	}
 
-	log.Printf("[%s] Term %d: Received AppendEntries from Leader %s", rn.id, rn.currentTerm, req.LeaderId)
-
-	// Tạo log entry cho mỗi command và append vào log
-	for _, cmd := range req.Entries {
-		entry := &pb.LogEntry{
-			Index:   int32(len(rn.log) + 1), // Có thể sử dụng commitIndex + 1 hoặc len(rn.log)+1
-			Term:    int32(rn.currentTerm),
-			Command: cmd.Command,
+	// If not the leader and the leader ID is invalid, reject
+	if rn.state != Leader {
+		if req.LeaderId == "" || (rn.leaderID != "" && req.LeaderId != rn.leaderID) {
+			log.Printf("[%s] Term %d: Rejecting AppendEntries from invalid source (LeaderId='%s')",
+				rn.id, rn.currentTerm, req.LeaderId)
+			return response
 		}
-		rn.log = append(rn.log, entry)
-		log.Printf("[%s] Term %d: Apply command: %v - at index %d", rn.id, rn.currentTerm, entry.Command, entry.Index)
 	}
 
-	// Cập nhật commitIndex nếu LeaderCommit (gửi từ leader) cao hơn commitIndex hiện tại của follower
+	// Store the leader ID
+	rn.leaderID = req.LeaderId
+	rn.resetElectionTimer()
+
+	// Log consistency check: if prevLogIndex is specified, ensure we have that entry
+	// with the correct term
+	prevLogIndex := int(req.PrevLogIndex)
+	if prevLogIndex > 0 {
+		// If our log doesn't reach prevLogIndex or term doesn't match, reject
+		if prevLogIndex > len(rn.log) ||
+			(prevLogIndex > 0 && int(rn.log[prevLogIndex-1].Term) != int(req.PrevLogTerm)) {
+			log.Printf("[%s] Term %d: Log inconsistency detected. PrevLogIndex: %d, Log length: %d",
+				rn.id, rn.currentTerm, prevLogIndex, len(rn.log))
+
+			// Tell the leader what index to start sending from
+			if prevLogIndex > len(rn.log) {
+				response.NextIndex = len(rn.log) + 1
+			} else {
+				// Find the last index for the conflicting term
+				conflictTerm := rn.log[prevLogIndex-1].Term
+				for i := prevLogIndex - 2; i >= 0; i-- {
+					if rn.log[i].Term != conflictTerm {
+						response.NextIndex = i + 2
+						break
+					}
+				}
+				if response.NextIndex == prevLogIndex {
+					response.NextIndex = 1 // Start from beginning
+				}
+			}
+			return response
+		}
+	}
+
+	log.Printf("[%s] Term %d: Processing AppendEntries from Leader %s", rn.id, rn.currentTerm, req.LeaderId)
+
+	// If we made it here, log consistency check passed
+
+	// If there are entries to append
+	if len(req.Entries) > 0 {
+		// Handle entries: append new entries, removing any conflicting entries
+		logIdx := prevLogIndex
+
+		// Process each entry
+		for _, entry := range req.Entries {
+			logIdx++
+
+			// If we're replacing an existing entry
+			if logIdx <= len(rn.log) {
+				// If existing entry conflicts with new one, delete it and all after it
+				if rn.log[logIdx-1].Term != entry.Term {
+					rn.log = rn.log[:logIdx-1]
+					// Add the new entry
+					rn.log = append(rn.log, entry)
+					log.Printf("[%s] Term %d: Replaced conflicting entry at index %d",
+						rn.id, rn.currentTerm, logIdx)
+				}
+				// Otherwise existing entry matches, keep it
+			} else {
+				// This is a new entry beyond our log, append it
+				rn.log = append(rn.log, entry)
+				log.Printf("[%s] Term %d: Appended new entry at index %d: %s",
+					rn.id, rn.currentTerm, logIdx, entry.Command)
+			}
+		}
+	}
+
+	// Update commit index if leader's commit index is higher
 	if int(req.LeaderCommit) > rn.commitIndex {
 		newCommitIndex := int(req.LeaderCommit)
 		if newCommitIndex > len(rn.log) {
@@ -277,10 +529,11 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 		rn.updateCommitIndexInternal(newCommitIndex)
 	}
 
-	return &AppendResponse{
-		Term:    rn.currentTerm,
-		Success: true,
-	}
+	// Update the response to indicate success
+	response.Success = true
+	response.NextIndex = len(rn.log) + 1
+
+	return response
 }
 
 // UpdateCommitIndex là phiên bản exported, tự lock mutex
