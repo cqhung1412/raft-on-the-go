@@ -154,7 +154,7 @@ sudo ./script/network-partition.sh remove
 **Inspect node state**
 
 ```sh
-curl localhost:<http-port>/inspect
+curl localhost:<http-port>/inspect | jq
 ```
 
 > Note: HTTP port = gRPC port + 1000 (e.g., gRPC port 5001 → HTTP port 6001)
