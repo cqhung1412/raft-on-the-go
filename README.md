@@ -25,9 +25,11 @@ Raft-on-the-Go is a distributed consensus implementation that provides a consist
 - Leader election with term-based voting
 - Log replication with consistency guarantees
 - Automatic recovery of failed nodes
-- Network partition tolerance
+- Advanced network partition tolerance with term stability
 - HTTP API for cluster interaction
-- Simulated network partition testing
+- Docker-based network partition simulation
+- Leader stability after partition healing
+- Protection against term inflation in minority partitions
 
 ## Getting Started
 
@@ -100,15 +102,21 @@ go run main.go --client --leader=<leader-port|5001> --term=<leader-term|1>
 ```
 
 This creates a network partition between:
-- Group 1: Nodes 1 and 2
-- Group 2: Nodes 3, 4, and 5
+- Group 1: Nodes 1 and 2 (minority)
+- Group 2: Nodes 3, 4, and 5 (majority)
 
-Other examples:
+Expected behavior:
+- The majority partition (3,4,5) will maintain or elect a stable leader
+- The minority partition (1,2) will detect it cannot reach a quorum
+- Nodes in the minority partition will not inflate their terms
+- The system will remain partially available (through the majority partition)
+
+Other partition examples:
 ```sh
 # Isolate node 1 from all other nodes
 ./script/docker-create-partition.sh '1:2,3,4,5'
 
-# Split the cluster into two groups
+# Split the cluster into two equal groups
 ./script/docker-create-partition.sh '1,2,3:4,5'
 ```
 
@@ -118,11 +126,20 @@ Other examples:
 ./script/docker-network-debug.sh
 ```
 
+This will show the current partition status and connectivity between nodes.
+
 **Restore network connectivity**
 
 ```sh
 ./script/docker-restore-connections.sh
 ```
+
+After restoring connections, the system will:
+1. Detect the reconnection event
+2. Maintain the existing leader from the majority partition
+3. Synchronize logs from the leader to nodes in the minority partition
+4. Prevent unnecessary leader elections and term inflation
+5. Restore full cluster functionality without disruption
 
 **Stop the Docker-based Raft cluster**
 
@@ -234,20 +251,31 @@ The implementation includes robust error handling for various failure scenarios:
    - Missing log entries are sent to bring the follower up to date
    - Log consistency is verified using the `prevLogIndex` and `prevLogTerm` fields
 
-4. **Network Partitions**: If the network is partitioned:
-   - Each partition may elect its own leader (split-brain)
-   - When the partition heals, the leader with the higher term prevails
-   - Log inconsistencies are resolved according to the Raft protocol
-   - Eventually, all nodes converge to a consistent state
+4. **Network Partitions**: Enhanced partition handling:
+   - Each partition with a majority may elect its own leader
+   - Minority partitions detect their status and prevent term inflation
+   - When a partition heals, the system detects reconnection events
+   - A post-reconnection stability period enforces leadership continuity
+   - The majority partition's leader is preserved to minimize disruption
+   - Term numbers remain stable, preventing unnecessary re-elections
+   - Log inconsistencies are automatically resolved following partition healing
+   - The system avoids "term inflation wars" between previously partitioned nodes
 
 ## Implementation Details
 
-This implementation follows the Raft consensus algorithm with:
+This implementation follows the extended Raft consensus algorithm with:
 
 - **State Management**: Each node can be in Follower, Candidate, or Leader state
 - **Log Replication**: Ensures all logs across the cluster are eventually consistent
 - **Safety Guarantees**: Only committed entries (replicated to a majority) are applied
 - **Term-Based Elections**: Prevents multiple leaders from existing in the same term
 - **Optimizations**: Fast log replication with nextIndex/matchIndex tracking
+- **Network Partition Awareness**: Detects minority vs. majority partition status
+- **Reconnection Detection**: Identifies when network connectivity is restored
+- **Term Stability**: Prevents unnecessary term increments in minority partitions
+- **Post-Partition Stability**: Enforces leadership continuity after healing
+- **No-op Leader Entries**: Ensures log consistency when leadership changes
 
-The core consensus logic is in `utils/raft.go`, while the networking and API are in `server/server.go`.
+The system is designed to be resilient to common distributed system failures, including partitions, node failures, and message loss, while maintaining performance and consistency.
+
+The core consensus logic is in `utils/raft.go`, while the networking and API are in `server/server.go`. Docker-based network partition testing is implemented through scripts in the `script/` directory.

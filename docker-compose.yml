@@ -20,7 +20,7 @@ services:
     # Add iptables for network partitioning
     cap_add:
       - NET_ADMIN
-    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node1 --port=5001 --peers=node2:5002,node3:5003,node4:5004,node5:5005"
+    command: sh -c "apk add --no-cache iptables iputils bash curl && go run main.go --node_id=Node1 --port=5001 --peers=node2:5002,node3:5003,node4:5004,node5:5005"
 
   node2:
     image: raft-on-the-go-image:latest
@@ -38,7 +38,7 @@ services:
     # Add iptables for network partitioning
     cap_add:
       - NET_ADMIN
-    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node2 --port=5002 --peers=node1:5001,node3:5003,node4:5004,node5:5005"
+    command: sh -c "apk add --no-cache iptables iputils bash curl && go run main.go --node_id=Node2 --port=5002 --peers=node1:5001,node3:5003,node4:5004,node5:5005"
 
   node3:
     image: raft-on-the-go-image:latest
@@ -56,7 +56,7 @@ services:
     # Add iptables for network partitioning
     cap_add:
       - NET_ADMIN
-    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node3 --port=5003 --peers=node1:5001,node2:5002,node4:5004,node5:5005"
+    command: sh -c "apk add --no-cache iptables iputils bash curl && go run main.go --node_id=Node3 --port=5003 --peers=node1:5001,node2:5002,node4:5004,node5:5005"
 
   node4:
     image: raft-on-the-go-image:latest
@@ -74,7 +74,7 @@ services:
     # Add iptables for network partitioning
     cap_add:
       - NET_ADMIN
-    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node4 --port=5004 --peers=node1:5001,node2:5002,node3:5003,node5:5005"
+    command: sh -c "apk add --no-cache iptables iputils bash curl && go run main.go --node_id=Node4 --port=5004 --peers=node1:5001,node2:5002,node3:5003,node5:5005"
 
   node5:
     image: raft-on-the-go-image:latest
@@ -92,7 +92,7 @@ services:
     # Add iptables for network partitioning
     cap_add:
       - NET_ADMIN
-    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node5 --port=5005 --peers=node1:5001,node2:5002,node3:5003,node4:5004"
+    command: sh -c "apk add --no-cache iptables iputils bash curl && go run main.go --node_id=Node5 --port=5005 --peers=node1:5001,node2:5002,node3:5003,node4:5004"
 
 networks:
   raft-network:

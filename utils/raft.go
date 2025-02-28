@@ -18,8 +18,9 @@ const (
 	MaxElectionTimeout = 3000 * time.Millisecond // Reduced for faster leader election in Docker
 	
 	// Additional stability constants
-	LeaderStabilityTimeout = 5000 * time.Millisecond  // Don't start elections if we've seen a leader recently
-	MaxTermGrowthRate = 2                           // Maximum number of terms a node can grow above cluster
+	LeaderStabilityTimeout = 10000 * time.Millisecond  // Don't start elections if we've seen a leader recently (increased to 10s)
+	PostPartitionStability = 15000 * time.Millisecond  // Additional stability period after reconnection
+	MaxTermGrowthRate = 2                            // Maximum number of terms a node can grow above cluster
 )
 
 type State int
@@ -51,6 +52,7 @@ type RaftNode struct {
 	consecutiveTimeouts int // Track consecutive request timeouts
 	reachablePeers     int  // Track number of reachable peers
 	lastLeaderContact  time.Time // Last time we heard from a leader
+	lastReconnection   time.Time // Last time we detected a network reconnection
 	stableLeader       bool      // True if we believe there's a stable leader
 
 	// Leader state - only used when node is leader
@@ -110,6 +112,7 @@ func NewRaftNode(id string, peers []string) *RaftNode {
 		consecutiveTimeouts: 0,
 		reachablePeers:     0,
 		lastLeaderContact:  time.Now(),
+		lastReconnection:   time.Time{}, // Zero time initially (no reconnection yet)
 		stableLeader:       false,
 	}
 	rn.resetElectionTimer()
@@ -156,14 +159,16 @@ func (rn *RaftNode) canReachQuorum() bool {
 	totalNodes := len(rn.peers) + 1 // Including self
 	quorumSize := totalNodes/2 + 1   // Majority needed
 	reachablePeers := 1             // Count self as reachable
+	previousReachablePeers := rn.reachablePeers
 	
 	// Use a waitgroup and channel to collect results concurrently
 	var wg sync.WaitGroup
 	results := make(chan bool, len(rn.peers))
 	
-	// Also try to detect if there's already an active leader
+	// Try to detect if there's already an active leader
 	foundLeader := false
 	leaderTerm := 0
+	foundLeaderID := ""
 	
 	for _, peer := range rn.peers {
 		wg.Add(1)
@@ -171,7 +176,7 @@ func (rn *RaftNode) canReachQuorum() bool {
 			defer wg.Done()
 			
 			// Try a quick connection to the peer
-			conn, err := grpc.Dial(peer, grpc.WithInsecure(), grpc.WithTimeout(300*time.Millisecond))
+			conn, err := grpc.Dial(peer, grpc.WithInsecure(), grpc.WithTimeout(500*time.Millisecond))
 			if err != nil {
 				results <- false
 				return
@@ -180,7 +185,7 @@ func (rn *RaftNode) canReachQuorum() bool {
 			
 			// Also check if this peer believes it's a leader or knows of a leader
 			client := pb.NewRaftClient(conn)
-			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			
 			// Try sending a heartbeat request to see if this peer responds
@@ -192,6 +197,15 @@ func (rn *RaftNode) canReachQuorum() bool {
 			if err == nil && resp != nil {
 				results <- true // The peer is reachable
 				
+				// If the peer has a leader ID, note it
+				if resp.LeaderId != "" {
+					rn.mu.Lock()
+					foundLeader = true
+					leaderTerm = int(resp.Term)
+					foundLeaderID = resp.LeaderId
+					rn.mu.Unlock()
+				}
+				
 				// If the peer has a higher term, note it
 				if resp.Term > int32(rn.currentTerm) {
 					rn.mu.Lock()
@@ -200,7 +214,7 @@ func (rn *RaftNode) canReachQuorum() bool {
 					rn.mu.Unlock()
 				}
 			} else {
-				results <- true // At least the connection worked
+				results <- false // Connection error
 			}
 		}(peer)
 	}
@@ -216,22 +230,52 @@ func (rn *RaftNode) canReachQuorum() bool {
 		}
 	}
 	
+	// If we can now reach significantly more peers than before, this might indicate
+	// a network reconnection/partition healing
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	
+	networkReconnected := false
+	
+	if previousReachablePeers > 0 && reachablePeers > previousReachablePeers && 
+	   reachablePeers >= quorumSize && previousReachablePeers < quorumSize {
+		// We've gone from a minority to a majority - network likely healed
+		log.Printf("[%s] Term %d: Network reconnection detected! Peers reachable: %d→%d (quorum: %d)",
+			rn.id, rn.currentTerm, previousReachablePeers, reachablePeers, quorumSize)
+		rn.lastReconnection = time.Now()
+		networkReconnected = true
+	}
+	
 	// Update the reachable peers count for future reference
 	rn.reachablePeers = reachablePeers
 	
-	// If we found a higher term, apply it now
-	if foundLeader && leaderTerm > rn.currentTerm {
-		rn.mu.Lock()
-		log.Printf("[%s] Term %d: Found higher term %d during quorum check, updating",
-			rn.id, rn.currentTerm, leaderTerm)
-		rn.currentTerm = leaderTerm
+	// If we found a leader with higher term, apply it now
+	if foundLeader && leaderTerm >= rn.currentTerm {
+		log.Printf("[%s] Term %d: Found leader (ID: %s) with term %d during quorum check, updating",
+			rn.id, rn.currentTerm, foundLeaderID, leaderTerm)
+		
+		if leaderTerm > rn.currentTerm {
+			rn.currentTerm = leaderTerm
+		}
+		
+		if foundLeaderID != "" {
+			rn.leaderID = foundLeaderID
+		}
+		
 		rn.state = Follower
 		rn.votedFor = ""
+		
 		// Update last leader contact time
 		rn.lastLeaderContact = time.Now()
-		rn.mu.Unlock()
 		
-		// We shouldn't try to become a leader if there's already one with a higher term
+		if networkReconnected {
+			// If we've just reconnected and immediately found a leader,
+			// be extra stable to prevent term inflation
+			log.Printf("[%s] Term %d: Post-reconnection leader stability enforced", 
+				rn.id, rn.currentTerm)
+		}
+		
+		// We shouldn't try to become a leader if there's already one with a higher/equal term
 		return false
 	}
 	
@@ -262,6 +306,28 @@ func (rn *RaftNode) startElection() {
 		return
 	}
 	
+	// Check if we've recently experienced a network reconnection
+	// If we have, we should be much more conservative about starting elections
+	timeSinceReconnection := time.Since(rn.lastReconnection)
+	if !rn.lastReconnection.IsZero() && timeSinceReconnection < PostPartitionStability {
+		log.Printf("[%s] Term %d: Network recently reconnected %v ago (< %v), enforcing post-partition stability",
+			rn.id, rn.currentTerm, timeSinceReconnection, PostPartitionStability)
+		
+		// If there's a known leader and it's not us, be very conservative
+		if rn.leaderID != "" && rn.leaderID != rn.id {
+			log.Printf("[%s] Term %d: Known leader exists (%s), avoiding disruptive election after reconnection",
+				rn.id, rn.currentTerm, rn.leaderID)
+			
+			// Set an extra-long timeout to give existing leader time to stabilize
+			backoffTime := PostPartitionStability // Use the entire stability period
+			rn.electionTimer.Stop()
+			rn.electionTimer = time.AfterFunc(backoffTime, rn.startElection)
+			
+			rn.mu.Unlock()
+			return
+		}
+	}
+	
 	// If we're already a candidate, increment failed elections counter 
 	if rn.state == Candidate {
 		rn.failedElections++
@@ -275,27 +341,36 @@ func (rn *RaftNode) startElection() {
 	totalNodes := len(rn.peers) + 1 // Including self
 	quorumSize := totalNodes/2 + 1   // Majority needed
 	
-	// For minority partitions or after too many failed elections, do pre-election connectivity check
-	// Higher failedElections count = more aggressive checks to prevent term inflation
-	shouldCheckConnectivity := (rn.failedElections >= 2) || 
-	                          (time.Since(rn.lastLeaderContact) > 10*MaxElectionTimeout)
+	// Always do a connectivity check right after restoring connections or if in doubt
+	shouldCheckConnectivity := (rn.failedElections >= 1) || // Always check after first failure 
+	                         (!rn.lastReconnection.IsZero() && time.Since(rn.lastReconnection) < PostPartitionStability*2) ||
+	                         (time.Since(rn.lastLeaderContact) > 5*MaxElectionTimeout)
 	
 	if shouldCheckConnectivity {
-		log.Printf("[%s] Term %d: Checking connectivity before starting election (failed elections: %d)",
-			rn.id, rn.currentTerm, rn.failedElections)
+		log.Printf("[%s] Term %d: Checking connectivity before starting election (failed elections: %d, reconnected: %v)",
+			rn.id, rn.currentTerm, rn.failedElections, !rn.lastReconnection.IsZero())
 		
 		// Release the lock during potentially lengthy network operations
 		rn.mu.Unlock()
 		canReachQuorum := rn.canReachQuorum()
 		rn.mu.Lock()
 		
-		// If we can't reach a quorum, don't even try to start an election
+		// If we can't reach a quorum, don't start an election and revert any term increases
 		if !canReachQuorum {
+			// Return to follower state
+			wasCandidate := rn.state == Candidate
+			rn.state = Follower
+			
+			// If this is a repeat failure in minority partition, revert term increment
+			// to prevent term inflation in isolated nodes
+			if wasCandidate && rn.failedElections > 1 {
+				// Revert the term increment that would happen below
+				log.Printf("[%s] Term %d: In minority partition, preventing term increment",
+					rn.id, rn.currentTerm)
+			}
+			
 			log.Printf("[%s] Term %d: Cannot reach quorum (%d/%d nodes), staying in follower state",
 				rn.id, rn.currentTerm, rn.reachablePeers, totalNodes)
-			
-			// Don't change term, stay as follower
-			rn.state = Follower
 			
 			// Set a much longer timeout before next election attempt based on failed elections
 			backoffTime := MaxElectionTimeout * time.Duration(3+rn.failedElections) 
@@ -318,8 +393,8 @@ func (rn *RaftNode) startElection() {
 	}
 	
 	// If we've tried too many times, back off significantly
-	if rn.failedElections >= 5 {
-		log.Printf("[%s] Term %d: Too many failed elections (%d), suppressing term increment",
+	if rn.failedElections >= 3 {
+		log.Printf("[%s] Term %d: Too many failed elections (%d), reverting to follower without term increment",
 			rn.id, rn.currentTerm, rn.failedElections)
 		
 		// Stay in follower state but with longer timeout
@@ -332,12 +407,15 @@ func (rn *RaftNode) startElection() {
 		return
 	}
 	
+	// Record the pre-election term for possible rollback
+	oldTerm := rn.currentTerm
+	
 	// Proceed with election - clear any existing leader ID
 	rn.leaderID = ""
 	
 	// Transition to candidate state
 	rn.state = Candidate
-	rn.currentTerm++ // Only increment term if we're actually starting an election
+	rn.currentTerm++ // Increment term for this election attempt
 	rn.votedFor = rn.id // Vote for self
 	
 	currentTerm := rn.currentTerm // Store current term for async operations
@@ -423,7 +501,16 @@ func (rn *RaftNode) startElection() {
 					log.Printf("[%s] Term %d: Cannot reach quorum (%d/%d votes, need %d), election failed",
 						rn.id, rn.currentTerm, votes, totalVotes, quorum)
 					
-					// Stay as candidate but schedule a new election with backoff
+					// Minority partition - revert term increment to avoid term inflation
+					if rn.reachablePeers < quorum {
+						log.Printf("[%s] Term %d: In minority partition, reverting term to %d",
+							rn.id, rn.currentTerm, oldTerm)
+						rn.currentTerm = oldTerm
+						rn.votedFor = "" // Clear vote since we're reverting term
+					}
+					
+					// Return to follower state
+					rn.state = Follower
 					rn.resetElectionTimer()
 					votingComplete = true
 				}
@@ -433,6 +520,14 @@ func (rn *RaftNode) startElection() {
 				// Election timeout - we didn't get enough votes
 				rn.mu.Lock()
 				if rn.state == Candidate && rn.currentTerm == currentTerm {
+						// Check if we are in a minority partition
+						if rn.reachablePeers < quorum {
+							log.Printf("[%s] Term %d: In minority partition, reverting term to %d",
+								rn.id, rn.currentTerm, oldTerm)
+							// Revert the term increment since we are in a minority
+							rn.currentTerm = oldTerm
+							rn.votedFor = "" // Clear vote since were reverting term
+						}
 					log.Printf("[%s] Term %d: Election timed out with %d/%d votes (needed %d)",
 						rn.id, rn.currentTerm, votes, totalVotes, quorum)
 					
@@ -779,6 +874,7 @@ func (rn *RaftNode) ReceiveHeartbeat(req *pb.HeartbeatRequest) (*pb.HeartbeatRes
 		Term:         int32(rn.currentTerm),
 		LastLogIndex: int32(len(rn.log)),
 		NeedsSync:    false,
+		LeaderId:     rn.leaderID, // Return our known leader ID
 	}
 	
 	// If the leader's term is less than ours, reject heartbeat
@@ -786,6 +882,19 @@ func (rn *RaftNode) ReceiveHeartbeat(req *pb.HeartbeatRequest) (*pb.HeartbeatRes
 		log.Printf("[%s] Term %d: Rejected heartbeat from %s (term %d < our term %d)",
 			rn.id, rn.currentTerm, req.LeaderId, req.Term, rn.currentTerm)
 		return response, nil
+	}
+	
+	// If this is the first heartbeat after a long silence, it might indicate reconnection
+	timeSinceContact := time.Since(rn.lastLeaderContact)
+	if timeSinceContact > 5*HeartbeatInterval && req.LeaderId != "" {
+		log.Printf("[%s] Term %d: Received heartbeat after %v silence - possible reconnection detected",
+			rn.id, rn.currentTerm, timeSinceContact)
+		
+		// If we haven't already recorded a recent reconnection
+		if rn.lastReconnection.IsZero() || time.Since(rn.lastReconnection) > PostPartitionStability {
+			// This could be a reconnection event
+			rn.lastReconnection = time.Now()
+		}
 	}
 	
 	// If the leader's term is greater than ours, update our term
@@ -808,7 +917,10 @@ func (rn *RaftNode) ReceiveHeartbeat(req *pb.HeartbeatRequest) (*pb.HeartbeatRes
 	}
 	
 	// Store the leader ID
-	rn.leaderID = req.LeaderId
+	if req.LeaderId != "" {
+		rn.leaderID = req.LeaderId
+		response.LeaderId = req.LeaderId // Echo back the leader ID
+	}
 	
 	// Reset election timer upon receiving valid heartbeat
 	rn.resetElectionTimer()
@@ -869,6 +981,18 @@ func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
 		response.Term = rn.currentTerm
 	}
 	
+	// Check for recent network reconnection - be extra conservative 
+	// about voting right after reconnection
+	if !rn.lastReconnection.IsZero() && time.Since(rn.lastReconnection) < PostPartitionStability {
+		// If we know of an existing leader, don't vote for anyone else
+		// This helps maintain stability after reconnection
+		if rn.leaderID != "" && rn.leaderID != req.CandidateId {
+			log.Printf("[%s] Term %d: Rejecting vote for %s - recent reconnection (%v ago) with known leader %s",
+				rn.id, rn.currentTerm, req.CandidateId, time.Since(rn.lastReconnection), rn.leaderID)
+			return response
+		}
+	}
+	
 	// We only vote if:
 	// 1. We haven't voted for anyone else this term, or we've already voted for this candidate
 	// 2. We haven't heard from a leader recently (to prevent vote flapping)
@@ -909,6 +1033,20 @@ func (rn *RaftNode) HandleRequestVote(req *VoteRequest) *VoteResponse {
 	// Vote logic: Check if we haven't voted yet or already voted for this candidate,
 	// AND if the candidate's log is at least as up-to-date as ours
 	if (rn.votedFor == "" || rn.votedFor == req.CandidateId) && upToDate {
+		// Check stability condition: don't grant vote immediately after reconnection
+		// unless to the current leader or if it's been a long time since leader contact
+		unstableVote := !rn.lastReconnection.IsZero() && 
+		                time.Since(rn.lastReconnection) < PostPartitionStability && 
+						rn.leaderID != "" && 
+						rn.leaderID != req.CandidateId &&
+						time.Since(rn.lastLeaderContact) < LeaderStabilityTimeout*2;
+						
+		if unstableVote {
+			log.Printf("[%s] Term %d: Rejecting vote for %s - prioritizing stability after reconnection",
+				rn.id, rn.currentTerm, req.CandidateId)
+			return response
+		}
+						
 		rn.votedFor = req.CandidateId
 		response.VoteGranted = true
 		
@@ -944,6 +1082,19 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 		return response
 	}
 	
+	// If this is the first AppendEntries after a long silence, it might indicate reconnection
+	timeSinceContact := time.Since(rn.lastLeaderContact)
+	if timeSinceContact > 5*HeartbeatInterval {
+		log.Printf("[%s] Term %d: Received AppendEntries after %v silence - possible reconnection detected",
+			rn.id, rn.currentTerm, timeSinceContact)
+		
+		// If we haven't already recorded a recent reconnection
+		if rn.lastReconnection.IsZero() || time.Since(rn.lastReconnection) > PostPartitionStability {
+			// This could be a reconnection event
+			rn.lastReconnection = time.Now()
+		}
+	}
+	
 	// If leader's term is greater than ours, update our term
 	if req.Term > rn.currentTerm {
 		log.Printf("[%s] Term %d: Discovered higher term %d from AppendEntries, updating term",
@@ -956,9 +1107,9 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 	
 	// If not the leader and the leader ID is invalid, reject
 	if rn.state != Leader {
-		if req.LeaderId == "" || (rn.leaderID != "" && req.LeaderId != rn.leaderID) {
-			log.Printf("[%s] Term %d: Rejecting AppendEntries from invalid source (LeaderId='%s')",
-				rn.id, rn.currentTerm, req.LeaderId)
+		if req.LeaderId == "" || (rn.leaderID != "" && req.LeaderId != rn.leaderID && !rn.lastReconnection.IsZero() && time.Since(rn.lastReconnection) < PostPartitionStability) {
+			log.Printf("[%s] Term %d: Rejecting AppendEntries from unexpected leader %s (current known leader: %s)",
+				rn.id, rn.currentTerm, req.LeaderId, rn.leaderID)
 			return response
 		}
 	}
@@ -974,8 +1125,19 @@ func (rn *RaftNode) HandleAppendEntries(req *AppendRequest) *AppendResponse {
 		rn.failedElections = 0
 	}
 	
-	// Store the leader ID
-	rn.leaderID = req.LeaderId
+	// Store the leader ID - this is critical after network reconnection to establish stable leadership
+	if req.LeaderId != "" {
+		// If it's a different leader than what we know, but we've just reconnected, 
+		// note this as significant leadership change
+		if rn.leaderID != "" && req.LeaderId != rn.leaderID && 
+		   !rn.lastReconnection.IsZero() && time.Since(rn.lastReconnection) < PostPartitionStability {
+			log.Printf("[%s] Term %d: Leadership change detected after reconnection: %s → %s",
+				rn.id, rn.currentTerm, rn.leaderID, req.LeaderId)
+		}
+		
+		rn.leaderID = req.LeaderId
+	}
+	
 	rn.resetElectionTimer()
 	
 	// Log consistency check: if prevLogIndex is specified, ensure we have that entry

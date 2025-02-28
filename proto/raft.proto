@@ -55,4 +55,5 @@ message HeartbeatResponse {
   int32 term = 2;
   int32 lastLogIndex = 3;
   bool needsSync = 4;
+  string leaderId = 5; // Include leader ID in responses to help with leader discovery
 }
