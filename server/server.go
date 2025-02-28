@@ -96,7 +96,8 @@ func (n *Node) replicateEntries(req *pb.AppendRequest) {
 		wg.Add(1)
 		go func(peer string) {
 			defer wg.Done()
-			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
+			// Connect directly to the peer address without assuming localhost
+			conn, err := grpc.Dial(peer, grpc.WithInsecure())
 			if err != nil {
 				log.Printf("[%s] Failed to connect to follower %s: %v", n.id, peer, err)
 				responseCh <- false

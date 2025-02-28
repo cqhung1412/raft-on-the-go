@@ -1,0 +1,99 @@
+version: '3'
+
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: raft-on-the-go-image:latest
+    container_name: raft-node1
+    hostname: node1
+    networks:
+      - raft-network
+    ports:
+      - "5001:5001"
+      - "6001:6001"
+    environment:
+      - NODE_ID=Node1
+      - PORT=5001
+      - PEERS=node2:5002,node3:5003,node4:5004,node5:5005
+    # Add iptables for network partitioning
+    cap_add:
+      - NET_ADMIN
+    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node1 --port=5001 --peers=node2:5002,node3:5003,node4:5004,node5:5005"
+
+  node2:
+    image: raft-on-the-go-image:latest
+    container_name: raft-node2
+    hostname: node2
+    networks:
+      - raft-network
+    ports:
+      - "5002:5002"
+      - "6002:6002"
+    environment:
+      - NODE_ID=Node2
+      - PORT=5002
+      - PEERS=node1:5001,node3:5003,node4:5004,node5:5005
+    # Add iptables for network partitioning
+    cap_add:
+      - NET_ADMIN
+    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node2 --port=5002 --peers=node1:5001,node3:5003,node4:5004,node5:5005"
+
+  node3:
+    image: raft-on-the-go-image:latest
+    container_name: raft-node3
+    hostname: node3
+    networks:
+      - raft-network
+    ports:
+      - "5003:5003"
+      - "6003:6003"
+    environment:
+      - NODE_ID=Node3
+      - PORT=5003
+      - PEERS=node1:5001,node2:5002,node4:5004,node5:5005
+    # Add iptables for network partitioning
+    cap_add:
+      - NET_ADMIN
+    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node3 --port=5003 --peers=node1:5001,node2:5002,node4:5004,node5:5005"
+
+  node4:
+    image: raft-on-the-go-image:latest
+    container_name: raft-node4
+    hostname: node4
+    networks:
+      - raft-network
+    ports:
+      - "5004:5004"
+      - "6004:6004"
+    environment:
+      - NODE_ID=Node4
+      - PORT=5004
+      - PEERS=node1:5001,node2:5002,node3:5003,node5:5005
+    # Add iptables for network partitioning
+    cap_add:
+      - NET_ADMIN
+    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node4 --port=5004 --peers=node1:5001,node2:5002,node3:5003,node5:5005"
+
+  node5:
+    image: raft-on-the-go-image:latest
+    container_name: raft-node5
+    hostname: node5
+    networks:
+      - raft-network
+    ports:
+      - "5005:5005"
+      - "6005:6005"
+    environment:
+      - NODE_ID=Node5
+      - PORT=5005
+      - PEERS=node1:5001,node2:5002,node3:5003,node4:5004
+    # Add iptables for network partitioning
+    cap_add:
+      - NET_ADMIN
+    command: sh -c "apk add --no-cache iptables iputils && go run main.go --node_id=Node5 --port=5005 --peers=node1:5001,node2:5002,node3:5003,node4:5004"
+
+networks:
+  raft-network:
+    driver: bridge

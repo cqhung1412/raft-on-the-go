@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	HeartbeatInterval  = 1000 * time.Millisecond
-	MinElectionTimeout = 3000 * time.Millisecond
-	MaxElectionTimeout = 5000 * time.Millisecond
+	HeartbeatInterval  = 500 * time.Millisecond  // Increased frequency for faster detection
+	MinElectionTimeout = 1500 * time.Millisecond // Reduced for faster leader election in Docker
+	MaxElectionTimeout = 3000 * time.Millisecond // Reduced for faster leader election in Docker
 )
 
 type State int
@@ -134,10 +134,11 @@ func (rn *RaftNode) startElection() {
 		lastLogTerm = int(rn.log[lastLogIndex-1].Term)
 	}
 
-	// send RequestVote for other node
+	// send RequestVote for other nodes
+	log.Printf("[%s] Term %d: Starting election, requesting votes...", rn.id, rn.currentTerm)
 	for _, peer := range rn.peers {
 		go func(peer string) {
-			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
+			conn, err := grpc.Dial(peer, grpc.WithInsecure())
 			if err != nil {
 				log.Printf("[%s] Failed to connect to %s: %v", rn.id, peer, err)
 				return
@@ -193,7 +194,7 @@ func (rn *RaftNode) sendHeartbeats() {
 
 	for _, peer := range rn.peers {
 		go func(peer string) {
-			conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
+			conn, err := grpc.Dial(peer, grpc.WithInsecure())
 			if err != nil {
 				log.Printf("[%s] Term %d: Failed to connect to %s for heartbeat: %v", rn.id, currentTerm, peer, err)
 				return
@@ -268,7 +269,7 @@ func (rn *RaftNode) sendHeartbeats() {
 
 // Helper method to send AppendEntries to a specific peer for log replication
 func (rn *RaftNode) sendAppendEntriesToPeer(peer string, req *pb.AppendRequest) {
-	conn, err := grpc.Dial("localhost:"+peer, grpc.WithInsecure())
+	conn, err := grpc.Dial(peer, grpc.WithInsecure())
 	if err != nil {
 		log.Printf("[%s] Term %d: Failed to connect to %s for log replication: %v", rn.id, req.Term, peer, err)
 		return

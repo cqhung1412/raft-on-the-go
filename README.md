@@ -35,7 +35,8 @@ Raft-on-the-Go is a distributed consensus implementation that provides a consist
 
 - Go 1.16+
 - Protocol Buffers compiler (`protoc`)
-- tmux (for multi-node testing)
+- tmux (for local multi-node testing)
+- Docker and Docker Compose (for containerized testing and network partitioning)
 
 ### Installation
 
@@ -83,6 +84,53 @@ go run main.go --client --leader=<leader-port|5001> --term=<leader-term|1>
 ```
 
 ### Simulating Network Conditions
+
+#### Using Docker (Recommended)
+
+**Start the Docker-based Raft cluster**
+
+```sh
+./script/docker-start-raft-network.sh
+```
+
+**Create a network partition between node groups**
+
+```sh
+./script/docker-create-partition.sh '1,2:3,4,5'
+```
+
+This creates a network partition between:
+- Group 1: Nodes 1 and 2
+- Group 2: Nodes 3, 4, and 5
+
+Other examples:
+```sh
+# Isolate node 1 from all other nodes
+./script/docker-create-partition.sh '1:2,3,4,5'
+
+# Split the cluster into two groups
+./script/docker-create-partition.sh '1,2,3:4,5'
+```
+
+**Debug network connections**
+
+```sh
+./script/docker-network-debug.sh
+```
+
+**Restore network connectivity**
+
+```sh
+./script/docker-restore-connections.sh
+```
+
+**Stop the Docker-based Raft cluster**
+
+```sh
+./script/docker-kill-raft-network.sh
+```
+
+#### Using Local Setup (Legacy)
 
 **Create a network partition** (requires sudo)
 
