@@ -194,12 +194,17 @@ func (n *Node) replicateEntries(req *pb.AppendRequest) {
 
 // Heartbeat RPC Implementation
 func (n *Node) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
-	log.Printf("[%s] Term %d: Received heartbeat from Leader %s ", n.id, req.Term, req.LeaderId)
+	// Only log if the node has been initialized (has a non-zero lastLeaderContact time)
+	if !n.RaftNode.IsInitialized() {
+		// Don't log during initialization period
+	} else {
+		log.Printf("[%s] Term %d: Received heartbeat from Leader %s ", n.id, req.Term, req.LeaderId)
+	}
 
 	// Process the heartbeat through the Raft node
 	response, err := n.RaftNode.ReceiveHeartbeat(req)
 
-	if err == nil && response.NeedsSync {
+	if err == nil && response.NeedsSync && n.RaftNode.IsInitialized() {
 		log.Printf("[%s] Term %d: Node needs log synchronization with Leader %s", n.id, req.Term, req.LeaderId)
 	}
 
@@ -215,6 +220,13 @@ func NewNode(id, port string, peers []string) *Node {
 		peers:    peers,
 		RaftNode: utils.NewRaftNode(id, peers),
 	}
+}
+
+// InitializeRaftNode prepares the Raft node for election by starting its election timer.
+// This should be called after all nodes are created to ensure proper synchronization.
+func (n *Node) InitializeRaftNode() {
+	log.Printf("[%s] Initializing Raft node", n.id)
+	n.RaftNode.InitializeNode()
 }
 
 // Start initializes and runs the gRPC server

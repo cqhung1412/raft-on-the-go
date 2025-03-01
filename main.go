@@ -11,6 +11,7 @@ import (
 	"raft-on-the-go/server"
 	"strconv"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc"
 )
@@ -39,6 +40,14 @@ func runServer(nodeID, port string, peers []string) {
 	// Start the HTTP inspection server
 	go func() {
 		newNode.StartHTTP(inspectPort)
+	}()
+	
+	// Wait a moment for all nodes to start up, then initialize the Raft node
+	go func() {
+		// Give nodes time to start their gRPC servers
+		time.Sleep(3 * time.Second)
+		log.Printf("[%s] All nodes should be up now, initializing Raft node", nodeID)
+		newNode.InitializeRaftNode()
 	}()
 
 	// Keep the program running indefinitely
@@ -131,6 +140,14 @@ func autoDetectServer() {
 		// Start HTTP server
 		go func() {
 			newNode.StartHTTP(inspectPort)
+		}()
+		
+		// Wait a moment for all nodes to start up, then initialize the Raft node
+		go func() {
+			// Give nodes time to start their gRPC servers
+			time.Sleep(3 * time.Second)
+			log.Printf("[%s] All nodes should be up now, initializing Raft node", nodeName)
+			newNode.InitializeRaftNode()
 		}()
 
 		// Stop looking for more ports
