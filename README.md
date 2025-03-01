@@ -11,6 +11,11 @@ A robust implementation of the [Raft consensus algorithm](https://raft.github.io
   - [Managing the Cluster](#managing-the-cluster)
   - [Simulating Network Conditions](#simulating-network-conditions)
   - [Interacting with the Cluster](#interacting-with-the-cluster)
+- [Core RAFT Workflows](#core-raft-workflows)
+  - [Leader Election](#leader-election)
+  - [Log Replication](#log-replication)
+  - [Node Recovery](#node-recovery)
+  - [Network Partitioning](#network-partitioning)
 - [API Reference](#api-reference)
 - [Fault Tolerance](#fault-tolerance)
 - [Implementation Details](#implementation-details)
@@ -19,17 +24,34 @@ A robust implementation of the [Raft consensus algorithm](https://raft.github.io
 
 Raft-on-the-Go is a distributed consensus implementation that provides a consistent, fault-tolerant key-value store across multiple nodes. It follows the Raft protocol for leader election, log replication, and handling network partitions.
 
+This implementation focuses on robustness and fault tolerance, with special attention to handling network partitions gracefully. The system ensures that when network issues occur, the cluster maintains consistency while preventing term inflation in minority partitions, and smoothly recovers when connectivity is restored.
+
 ## Features
 
-- Complete implementation of the Raft consensus algorithm
-- Leader election with term-based voting
-- Log replication with consistency guarantees
-- Automatic recovery of failed nodes
-- Advanced network partition tolerance with term stability
-- HTTP API for cluster interaction
-- Docker-based network partition simulation
-- Leader stability after partition healing
-- Protection against term inflation in minority partitions
+- **Consensus Protocol**: Complete implementation of the Raft consensus algorithm
+- **Leadership Management**
+  - Leader election with term-based voting
+  - Automatic leader step-down when disconnected from majority
+  - No-op entries for establishing leadership
+  - Protection against multiple leaders in the same term
+- **Data Consistency**
+  - Log replication with strong consistency guarantees
+  - Majority-based commit rules to ensure safety
+  - Efficient log reconciliation for lagging nodes
+- **Fault Tolerance**
+  - Automatic recovery of failed nodes
+  - Continued operation with minority node failures
+  - Graceful leader failover
+- **Network Partition Handling**
+  - Specialized minority partition detection
+  - Prevention of term inflation in minority partitions
+  - Smooth reconnection handling after partition healing
+  - Leadership stability during network fluctuations
+- **Operational Features**
+  - HTTP API for cluster management and inspection
+  - Docker-based network partition testing environment
+  - Comprehensive logging for debugging and monitoring
+  - Graceful node shutdown and recovery
 
 ## Getting Started
 
@@ -42,18 +64,46 @@ Raft-on-the-Go is a distributed consensus implementation that provides a consist
 
 ### Installation
 
-1. Clone the repository
-2. Generate protocol buffer code:
+1. Clone the repository:
+   ```sh
+   git clone https://github.com/yourusername/raft-on-the-go.git
+   cd raft-on-the-go
+   ```
 
+2. Install Go dependencies:
+   ```sh
+   go mod download
+   ```
+
+3. Generate protocol buffer code:
    ```sh
    protoc --go_out=. --go-grpc_out=. ./proto/raft.proto
    ```
 
-3. Make scripts executable:
-
+4. Make scripts executable:
    ```sh
    chmod +x ./script/*.sh
    ```
+
+5. Build the project:
+   ```sh
+   go build
+   ```
+
+### Project Structure
+
+```
+raft-on-the-go/
+├── proto/             # Protocol buffer definitions
+├── script/            # Cluster management and testing scripts
+├── server/            # GRPC server and node implementation
+├── utils/             # Core Raft algorithm implementation
+│   ├── kvstore.go     # Key-value store (state machine)
+│   └── raft.go        # Raft consensus logic
+├── main.go            # Entry point for both server and client
+├── go.mod             # Go module definition
+└── docker-compose.yml # Docker configuration for cluster testing
+```
 
 ## Usage
 
@@ -180,7 +230,6 @@ curl localhost:<http-port>/inspect | jq
 
 ```sh
 curl -X POST http://localhost:6001/append -H "Content-Type: application/json" -d '{
-  "term": 1,
   "entries": [
     {
       "command": "key1=value1"
@@ -239,43 +288,408 @@ curl -X POST http://localhost:6001/shutdown
 
 ## Fault Tolerance
 
-The implementation includes robust error handling for various failure scenarios:
+The implementation includes robust error handling for various failure scenarios, ensuring reliable operation even in challenging distributed environments.
 
-1. **Node Failures**: When a follower node crashes or shuts down, the leader continues to function with the remaining nodes as long as a majority is available.
+### Node Failures
 
-2. **Leader Failures**: If a leader fails, a new election is triggered after the election timeout, and a new leader is elected.
+When a node fails, the system automatically adapts:
 
-3. **Node Recovery**: When a failed node rejoins the cluster:
-   - It automatically receives heartbeats from the current leader
-   - The leader detects that the follower is behind (through the `needsSync` flag)
-   - Missing log entries are sent to bring the follower up to date
-   - Log consistency is verified using the `prevLogIndex` and `prevLogTerm` fields
+```mermaid
+graph TD
+    A[Node Failure Detected] --> B{Is Failed Node Leader?}
+    
+    B -->|Yes| C[Follower Election Timeout Expires]
+    B -->|No| D[Cluster Continues with Remaining Nodes]
+    
+    C --> E[New Leader Election]
+    E --> F[New Leader Selected]
+    
+    F --> G[Cluster Continues with New Leader]
+    D --> H{Majority of Nodes Still Available?}
+    
+    H -->|Yes| I[Cluster Remains Operational]
+    H -->|No| J[Cluster Becomes Unavailable]
+    
+    I --> K[Failed Node Recovers]
+    J --> K
+    
+    K --> L[Node Receives Heartbeat from Leader]
+    L --> M[Node Synchronizes Missing Entries]
+    M --> N[Node Fully Rejoins Cluster]
+```
 
-4. **Network Partitions**: Enhanced partition handling:
-   - Each partition with a majority may elect its own leader
-   - Minority partitions detect their status and prevent term inflation
-   - When a partition heals, the system detects reconnection events
-   - A post-reconnection stability period enforces leadership continuity
-   - The majority partition's leader is preserved to minimize disruption
-   - Term numbers remain stable, preventing unnecessary re-elections
-   - Log inconsistencies are automatically resolved following partition healing
-   - The system avoids "term inflation wars" between previously partitioned nodes
+Key resilience features:
+- The cluster continues operating as long as a majority of nodes remain active
+- Leader failures trigger automatic re-elections
+- When nodes recover, they automatically catch up with missed operations
+- No manual intervention required for basic failure recovery
+
+### Network Partitions
+
+Network partitions are handled with special care to maintain consistency:
+
+```mermaid
+graph TD
+    A[Network Partition Detected] --> B[Connectivity Check]
+    B --> C{Can Reach Quorum?}
+    
+    C -->|Yes| D[Continue Normal Operation]
+    C -->|No| E[Detect Minority Partition Status]
+    
+    D --> F[May Become or Remain Leader]
+    E --> G[Prevent Term Inflation]
+    
+    G --> H[Exponential Backoff on Elections]
+    H --> I[Remain in Follower State]
+    
+    J[Partition Heals] --> K[Detect Reconnection]
+    K --> L[Stability Period]
+    
+    L --> M[Synchronize Logs]
+    M --> N[Resume Normal Operation]
+```
+
+Advanced partition handling features:
+1. **Partition Detection**
+   - Nodes continuously monitor their connectivity to the cluster
+   - Adaptive quorum checking determines partition status
+   - Special handling for nodes in minority partitions
+
+2. **Term Stability**
+   - Minority partitions avoid term inflation through term increment prevention
+   - Term rollback mechanisms prevent term wars after reconnection
+   - Leadership stability is prioritized during healing periods
+
+3. **Reconnection Management**
+   - Automatic detection of network healing
+   - Post-reconnection stability period prevents unnecessary leadership changes
+   - Progressive log synchronization restores consistency across all nodes
 
 ## Implementation Details
 
-This implementation follows the extended Raft consensus algorithm with:
+This implementation extends the standard Raft consensus algorithm with enhancements for improved stability and partition tolerance.
 
-- **State Management**: Each node can be in Follower, Candidate, or Leader state
-- **Log Replication**: Ensures all logs across the cluster are eventually consistent
-- **Safety Guarantees**: Only committed entries (replicated to a majority) are applied
-- **Term-Based Elections**: Prevents multiple leaders from existing in the same term
-- **Optimizations**: Fast log replication with nextIndex/matchIndex tracking
-- **Network Partition Awareness**: Detects minority vs. majority partition status
-- **Reconnection Detection**: Identifies when network connectivity is restored
-- **Term Stability**: Prevents unnecessary term increments in minority partitions
-- **Post-Partition Stability**: Enforces leadership continuity after healing
-- **No-op Leader Entries**: Ensures log consistency when leadership changes
+### Core Components and Design
+
+```mermaid
+classDiagram
+    class RaftNode {
+        -id: string
+        -peers: []string
+        -currentTerm: int
+        -votedFor: string
+        -state: State
+        -log: []LogEntry
+        -commitIndex: int
+        -lastApplied: int
+        +RequestVote()
+        +AppendEntries()
+        +Heartbeat()
+        -startElection()
+        -canReachQuorum()
+        -sendHeartbeats()
+        -updateCommitIndex()
+    }
+    
+    class LogEntry {
+        +term: int
+        +command: string
+    }
+    
+    class KVStore {
+        -store: map[string]string
+        +Get(key)
+        +Set(key, value)
+        +Delete(key)
+    }
+    
+    class Node {
+        -id: string
+        -port: string
+        -peers: []string
+        -raftNode: RaftNode
+        +Start()
+        +StartHTTP()
+        +InitializeRaftNode()
+    }
+    
+    Node *-- RaftNode
+    RaftNode *-- LogEntry
+    RaftNode *-- KVStore
+```
+
+### Key Implementation Features
+
+- **State Management**: 
+  - Each node maintains one of three states: Follower, Candidate, or Leader
+  - State transitions are triggered by timeouts, elections, and higher term discoveries
+  - Thread-safe state management with mutex protection
+
+- **Log Consistency**:
+  - All operations go through the leader to ensure linearizability
+  - Entries are committed only after replication to a majority
+  - Log consistency check enforced with prevLogIndex and prevLogTerm
+  - Automatic log conflict resolution with backward search algorithm
+
+- **Election Process**:
+  - Randomized election timeouts prevent simultaneous elections
+  - Pre-vote phase with quorum checking avoids unnecessary elections
+  - Exponential backoff on failed elections reduces network contention
+  - Connectivity checking prevents minority partitions from attempting elections
+
+- **Partition Tolerance Enhancements**:
+  - Term increment prevention in detected minority partitions
+  - Network reconnection detection with connectivity change monitoring
+  - Post-reconnection stability period with longer timeouts
+  - Smooth leadership transition when partitions heal
+
+- **Initialization Coordination**:
+  - Nodes start in an uninitialized state without election timers
+  - After all nodes are up, a coordinated initialization happens
+  - This prevents premature elections and ensures clean startup
+
+- **Leader Stability**:
+  - No-op entries added when nodes become leaders
+  - All followers reset election timers on valid heartbeats
+  - Leaders step down when they can't reach quorum
+  - LeaderStabilityTimeout prevents election churn
 
 The system is designed to be resilient to common distributed system failures, including partitions, node failures, and message loss, while maintaining performance and consistency.
 
-The core consensus logic is in `utils/raft.go`, while the networking and API are in `server/server.go`. Docker-based network partition testing is implemented through scripts in the `script/` directory.
+### Code Organization
+
+- **utils/raft.go**: Core consensus logic and Raft algorithm implementation
+- **utils/kvstore.go**: State machine implementation as a key-value store
+- **server/server.go**: gRPC and HTTP API interfaces
+- **proto/raft.proto**: Protocol buffer definitions for inter-node communication
+- **script/**: Shell scripts for cluster management and network partition testing
+- **main.go**: Application entry point for both server and client modes
+
+## Core Raft Workflows
+
+### Leader Election
+
+The leader election process ensures that only one leader exists at a time and that a leader has the support of a majority of nodes (a quorum).
+
+```mermaid
+sequenceDiagram
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+    participant C as Candidate
+    participant F3 as Follower 3
+    participant F4 as Follower 4
+    
+    Note over F1,F4: All nodes start as followers
+    Note over C: Election timeout triggers
+    Note over C: Increments term to T+1
+    Note over C: Changes to candidate state
+    Note over C: Votes for itself
+    
+    C ->> F1: RequestVote(term=T+1)
+    C ->> F2: RequestVote(term=T+1)
+    C ->> F3: RequestVote(term=T+1)
+    C ->> F4: RequestVote(term=T+1)
+    
+    F1 -->> C: VoteGranted=true
+    F2 -->> C: VoteGranted=true
+    F3 -->> C: VoteGranted=false (already voted)
+    F4 -->> C: VoteGranted=false (higher term)
+    
+    Note over C: Received majority votes (3/5 including self)
+    Note over C: Becomes leader
+    
+    C ->> F1: AppendEntries(heartbeat, term=T+1)
+    C ->> F2: AppendEntries(heartbeat, term=T+1)
+    C ->> F3: AppendEntries(heartbeat, term=T+1)
+    C ->> F4: AppendEntries(heartbeat, term=T+1)
+    
+    Note over F1,F4: All nodes recognize new leader
+    Note over F1,F4: Reset election timers
+```
+
+Key aspects of the leader election:
+1. Nodes start in follower state with randomly set election timers
+2. When a follower's timer expires without hearing from a leader, it becomes a candidate
+3. Candidates increment their term, vote for themselves, and request votes from other nodes
+4. If a candidate receives votes from a majority of nodes, it becomes the leader
+5. Leaders send regular heartbeats to maintain authority and prevent new elections
+6. If a candidate sees a higher term, it reverts to follower state
+
+### Log Replication
+
+Log replication ensures all nodes eventually contain the same log entries in the same order, guaranteeing consistency across the distributed system.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant L as Leader
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+    participant F3 as Follower 3
+    
+    C ->> L: Write(key1=value1)
+    Note over L: Appends to local log
+    Note over L: term=T, index=N
+    
+    par Leader to Followers
+        L ->> F1: AppendEntries(prevIndex=N-1, entries=[{term=T, key1=value1}])
+        L ->> F2: AppendEntries(prevIndex=N-1, entries=[{term=T, key1=value1}])
+        L ->> F3: AppendEntries(prevIndex=N-1, entries=[{term=T, key1=value1}])
+    end
+    
+    F1 -->> L: Success=true
+    F2 -->> L: Success=true
+    F3 -->> L: Success=false (log inconsistency)
+    
+    Note over L: Entry replicated to majority (2/3 followers + leader)
+    Note over L: Updates commitIndex=N
+    
+    L ->> F1: AppendEntries(leaderCommit=N)
+    L ->> F2: AppendEntries(leaderCommit=N)
+    L ->> F3: AppendEntries(prevIndex=N-2, entries=[...]) 
+    
+    Note over L: Applies entry to state machine
+    Note over F1,F2: Apply entry to state machines
+    
+    F3 -->> L: Success=true
+    L ->> F3: AppendEntries(leaderCommit=N)
+    Note over F3: Apply entry to state machine
+    
+    C <<-- L: Success
+```
+
+Key aspects of log replication:
+1. Clients send writes to the leader
+2. Leader appends the entry to its log and replicates to followers
+3. When a majority of nodes confirm replication, the entry is committed
+4. Leader notifies followers of new commit index
+5. Each node applies committed entries to its state machine (KV store)
+6. Log inconsistencies are resolved by working backward until logs match
+
+### Node Recovery
+
+When a node fails and then recovers, it needs to catch up with the cluster state.
+
+```mermaid
+sequenceDiagram
+    participant L as Leader
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+    participant FR as Failed/Recovering Node
+    
+    Note over FR: Node crashes
+    
+    L ->> F1: AppendEntries(heartbeat + new entries)
+    L ->> F2: AppendEntries(heartbeat + new entries)
+    L -x FR: AppendEntries (fails)
+    
+    Note over L,F2: Cluster continues with majority (3/4)
+    Note over L,F2: Multiple entries get committed
+    
+    Note over FR: Node recovers and rejoins
+    
+    L ->> FR: AppendEntries(heartbeat)
+    FR -->> L: Success=false, nextIndex=lastIndex+1, needsSync=true
+    
+    Note over L: Leader detects follower needs sync
+    
+    L ->> FR: AppendEntries(prevIndex=lastIndex, entries=[{all missing entries}])
+    
+    Alt Logs match at prevIndex
+        FR -->> L: Success=true, nextIndex=newLastIndex+1
+        Note over FR: Updates log with all new entries
+    else Logs don't match
+        FR -->> L: Success=false, nextIndex=earlier index
+        L ->> FR: AppendEntries(earlier prevIndex)
+        loop Until logs match
+            FR -->> L: Success=false, nextIndex=earlier index
+            L ->> FR: AppendEntries(earlier prevIndex)
+        end
+        FR -->> L: Success=true
+        L ->> FR: AppendEntries(all entries after match point)
+        FR -->> L: Success=true
+    end
+    
+    L ->> FR: AppendEntries(leaderCommit=latest)
+    Note over FR: Apply entries up to leaderCommit
+    Note over FR: Node fully recovered and synchronized
+```
+
+Key aspects of node recovery:
+1. When a node rejoins, it receives heartbeats from the leader
+2. The leader detects the node is behind through the lastLogIndex comparison
+3. The leader sends all missing entries to bring the follower up to date
+4. If logs are inconsistent, the leader and follower work backward until finding a matching entry
+5. After synchronizing logs, the follower applies all committed entries
+6. The node returns to full participation in the cluster
+
+### Network Partitioning
+
+Network partitions can split the cluster into isolated groups. Raft maintains consistency by only allowing the majority partition to make progress.
+
+```mermaid
+sequenceDiagram
+    participant M1 as Majority-1
+    participant M2 as Majority-2
+    participant M3 as Majority-3
+    participant N1 as Minority-1
+    participant N2 as Minority-2
+    
+    Note over M1,N2: Single cluster with leader M1
+    
+    rect rgb(255, 220, 220)
+        Note over M1,N2: Network partition occurs
+    end
+    
+    Note over M1,M3: Majority partition (3/5 nodes)
+    Note over N1,N2: Minority partition (2/5 nodes)
+    
+    M1 ->> M2: AppendEntries(heartbeat)
+    M1 ->> M3: AppendEntries(heartbeat)
+    M1 -x N1: AppendEntries(heartbeat)
+    M1 -x N2: AppendEntries(heartbeat)
+    
+    Note over M1: Continues as leader in majority partition
+    
+    Note over N1: Election timeout, becomes candidate
+    Note over N1: Detects cannot reach quorum
+    Note over N1: Does not increment term, avoids term inflation
+    
+    N1 ->> N2: RequestVote
+    N2 -->> N1: VoteGranted=true
+    
+    Note over N1: Only has 2 votes (self + N2), needs 3
+    Note over N1: Returns to follower state without term increase
+    
+    Note over M1,M3: Majority partition continues normal operation
+    Note over N1,N2: Minority partition remains unavailable
+    
+    rect rgb(220, 255, 220)
+        Note over M1,N2: Network partition heals
+    end
+    
+    Note over M1,N2: All nodes detect reconnection
+    
+    M1 ->> N1: AppendEntries(heartbeat)
+    M1 ->> N2: AppendEntries(heartbeat)
+    
+    N1 -->> M1: Success=false, needsSync=true
+    N2 -->> M1: Success=false, needsSync=true
+    
+    Note over M1: Leader sends missing entries to N1, N2
+    
+    M1 ->> N1: AppendEntries(missing entries)
+    M1 ->> N2: AppendEntries(missing entries)
+    
+    Note over N1,N2: Logs synchronized with majority
+    Note over M1,N2: Cluster fully operational again
+```
+
+Key aspects of network partition handling:
+1. When a partition occurs, only the majority partition can make progress
+2. Nodes in minority partitions detect they cannot reach quorum
+3. Minority nodes avoid term inflation by not incrementing terms when they cannot reach quorum
+4. When the partition heals, nodes detect reconnection
+5. The established leader from the majority partition continues leadership
+6. Disconnected nodes synchronize their logs with the leader
+7. The system ensures stability through reconnection-aware logic
