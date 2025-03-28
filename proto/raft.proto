@@ -31,20 +31,29 @@ message VoteResponse {
 message AppendRequest {
   int32 term = 1;
   string leaderId = 2;
-  repeated LogEntry entries = 3;
-  int32 leaderCommit = 4;
+  int32 prevLogIndex = 3;
+  int32 prevLogTerm = 4;
+  repeated LogEntry entries = 5;
+  int32 leaderCommit = 6;
 }
 
 message AppendResponse {
   int32 term = 1;
   bool success = 2;
+  int32 nextIndex = 3;
 }
 
 message HeartbeatRequest {
   int32 term = 1;
   string leaderId = 2;
+  int32 leaderCommit = 3;
+  int32 lastLogIndex = 4;
 }
 
 message HeartbeatResponse {
   bool success = 1;
+  int32 term = 2;
+  int32 lastLogIndex = 3;
+  bool needsSync = 4;
+  string leaderId = 5; // Include leader ID in responses to help with leader discovery
 }
