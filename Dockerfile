@@ -3,7 +3,7 @@ FROM golang:1.23-alpine
 WORKDIR /app
 
 # Install tools needed for development
-# RUN apk add --no-cache bash curl
+RUN apk add --no-cache iptables iputils bash curl
 
 # Copy go mod and sum files
 COPY go.mod go.sum ./
