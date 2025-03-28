@@ -41,7 +41,7 @@ func runServer(nodeID, port string, peers []string) {
 	go func() {
 		newNode.StartHTTP(inspectPort)
 	}()
-	
+
 	// Wait a moment for all nodes to start up, then initialize the Raft node
 	go func() {
 		// Give nodes time to start their gRPC servers
@@ -55,7 +55,7 @@ func runServer(nodeID, port string, peers []string) {
 }
 
 // runClient connects to a Raft leader node via gRPC and sends an AppendEntries request.
-// 
+//
 // It establishes a gRPC connection to the leader at the given address,
 // constructs an AppendRequest with a log entry that includes the specified term
 // and a predefined command ("key1=value1"), and sends the request using the Raft service client.
@@ -128,8 +128,13 @@ func autoDetectServer() {
 		// Create a new node
 		nodeName := fmt.Sprintf("Node%d", i+1)
 		fmt.Printf("[%s] Starting process on port %s...\n", nodeName, port)
-		peers := append([]string{}, ports...)
-		peers = append(peers[:i], peers[i+1:]...) // Remove current port from peers
+		// Construct peers list with localhost prefix for local execution
+		peers := []string{}
+		for j, p := range ports {
+			if i != j {
+				peers = append(peers, "localhost:"+p)
+			}
+		}
 		newNode := server.NewNode(nodeName, ports[i], peers)
 
 		// Start gRPC server
@@ -141,7 +146,7 @@ func autoDetectServer() {
 		go func() {
 			newNode.StartHTTP(inspectPort)
 		}()
-		
+
 		// Wait a moment for all nodes to start up, then initialize the Raft node
 		go func() {
 			// Give nodes time to start their gRPC servers
@@ -165,7 +170,7 @@ func main() {
 	clientFlag := flag.Bool("client", false, "Run client to send request")
 	leaderAddress := flag.String("leader", "5001", "Leader's address (host:port or just port)")
 	term := flag.Int("term", 1, "Leader's term")
-	
+
 	// Add server flags for Docker deployment
 	nodeID := flag.String("node_id", "", "Node identifier")
 	port := flag.String("port", "", "GRPC port to listen on")
