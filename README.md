@@ -573,7 +573,7 @@ sequenceDiagram
     L ->> F3: AppendEntries(leaderCommit=N)
     Note over F3: Apply entry to state machine
 
-    C <<-- L: Success
+    C <-- L: Success
 ```
 
 Key aspects of log replication:
